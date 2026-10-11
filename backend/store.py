@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -147,3 +148,89 @@ def get_user_id_by_webhook_token(token: str) -> str | None:
     with closing(_conn()) as c:
         row = c.execute("select user_id from ai_settings where webhook_token=? and enabled=1", (token,)).fetchone()
     return row["user_id"] if row else None
+
+
+AI_DEDUP_WINDOW_SECONDS = 120
+
+
+def _dedup_key(symbol: str, timeframe: str, action: str, note: str | None) -> str:
+    raw = f"{symbol}|{timeframe}|{action}|{note or ''}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def record_incoming_signal(
+    user_id: str, symbol: str, timeframe: str, action: str, note: str | None, cooldown_minutes: int
+) -> dict[str, Any]:
+    key = _dedup_key(symbol, timeframe, action, note)
+    now = int(time.time())
+    with closing(_conn()) as c:
+        c.execute("begin immediate")
+        try:
+            dup = c.execute(
+                "select id from ai_signals where user_id=? and dedup_key=? and ts > ? limit 1",
+                (user_id, key, now - AI_DEDUP_WINDOW_SECONDS),
+            ).fetchone()
+            inflight = c.execute(
+                "select id from ai_signals where user_id=? and timeframe=? and status='processing' limit 1",
+                (user_id, timeframe),
+            ).fetchone()
+            if dup or inflight:
+                status = "duplicate_skipped"
+            else:
+                last_trade = c.execute(
+                    "select ts from ai_signals where user_id=? and timeframe=? and status='done' "
+                    "and json_extract(result_json,'$.execution_result.executed')=1 order by ts desc limit 1",
+                    (user_id, timeframe),
+                ).fetchone()
+                if last_trade and now - last_trade["ts"] < cooldown_minutes * 60:
+                    status = "cooldown_skipped"
+                else:
+                    status = "processing"
+            cur = c.execute(
+                "insert into ai_signals(user_id, ts, symbol, timeframe, action, note, dedup_key, status, result_json) "
+                "values(?,?,?,?,?,?,?,?,?)",
+                (user_id, now, symbol, timeframe, action, note, key, status, None),
+            )
+            signal_id = cur.lastrowid
+            c.execute("commit")
+        except Exception:
+            c.execute("rollback")
+            raise
+    return {"id": signal_id, "status": status}
+
+
+def update_signal_result(signal_id: int, status: str, result: dict[str, Any]) -> None:
+    with closing(_conn()) as c:
+        c.execute("update ai_signals set status=?, result_json=? where id=?", (status, json.dumps(result, default=str), signal_id))
+
+
+def list_signals(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    with closing(_conn()) as c:
+        rows = c.execute(
+            "select id, ts, symbol, timeframe, action, note, status, result_json from ai_signals "
+            "where user_id=? order by id desc limit ?",
+            (user_id, limit),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["result_json"] = json.loads(d["result_json"]) if d["result_json"] else None
+        out.append(d)
+    return out
+
+
+def increment_trade_count(user_id: str) -> None:
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    with closing(_conn()) as c:
+        c.execute(
+            "insert into ai_trade_count(user_id, day, count) values(?,?,1) "
+            "on conflict(user_id, day) do update set count = count + 1",
+            (user_id, day),
+        )
+
+
+def get_trade_count_today(user_id: str) -> int:
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    with closing(_conn()) as c:
+        row = c.execute("select count from ai_trade_count where user_id=? and day=?", (user_id, day)).fetchone()
+    return row["count"] if row else 0

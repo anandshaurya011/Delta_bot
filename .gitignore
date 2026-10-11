@@ -16,3 +16,6 @@ trade_events.db
 next-env.d.ts
 .superpowers/
 backend (Copy)/
+*.db-journal
+*.db-wal
+*.db-shm

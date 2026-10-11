@@ -92,6 +92,20 @@ def test_wait_for_fill_times_out_when_still_open():
     assert result["outcome"] == "unfilled_timeout"
 
 
+def test_wait_for_fill_missing_unfilled_size_key_falls_through_to_state_check():
+    # Malformed/incomplete exchange response: no "unfilled_size" key at all.
+    # Must NOT be treated as filled; should fall through to state-based logic.
+    with patch("ai_pipeline.delta.get_order_by_id", return_value={"id": 1, "state": "cancelled"}):
+        result = ai_pipeline.wait_for_fill(1, timeout_s=1, interval_s=0.01)
+    assert result["outcome"] == "exchange_rejected"
+
+
+def test_wait_for_fill_missing_unfilled_size_key_times_out_when_open():
+    with patch("ai_pipeline.delta.get_order_by_id", return_value={"id": 1, "state": "open"}):
+        result = ai_pipeline.wait_for_fill(1, timeout_s=0.05, interval_s=0.01)
+    assert result["outcome"] == "unfilled_timeout"
+
+
 def test_executer_node_holds_without_calling_llm_or_placing_order():
     state = _state(plan={"action": "hold", "side": "none", "size_hint": None, "reasoning": "nothing to do"})
     with patch("ai_pipeline.delta.place_order") as mock_place:
@@ -130,3 +144,22 @@ def test_executer_node_places_order_and_confirms_fill():
     assert state["execution_result"]["executed"] is True
     assert state["execution_result"]["fill_status"] == "filled"
     mock_inc.assert_called_once()
+
+
+def test_executer_node_handles_malformed_json_from_llm():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    with patch("ai_pipeline.call_llm", return_value="not valid json"), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_executer_node_handles_missing_required_field_from_llm():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy"})  # missing "size"
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}

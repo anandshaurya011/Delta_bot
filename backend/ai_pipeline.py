@@ -130,9 +130,8 @@ def wait_for_fill(order_id: int, timeout_s: float = 10.0, interval_s: float = 1.
     deadline = _time.time() + timeout_s
     while True:
         order = delta.get_order_by_id(order_id)
-        unfilled = order.get("unfilled_size", 0)
         state = order.get("state")
-        if unfilled == 0:
+        if "unfilled_size" in order and order["unfilled_size"] == 0:
             return {"outcome": "filled", "order": order}
         if state == "closed":
             return {"outcome": "partially_filled", "order": order}
@@ -155,10 +154,15 @@ def executer_node(state: PipelineState) -> PipelineState:
         system_prompt += "\n\nUser instructions: " + settings["executer_prompt"]
     user_content = json.dumps({"plan": plan, "signal": state["signal"]})
     raw = call_llm(model=settings["executer_model"], system_prompt=system_prompt, user_content=user_content)
-    order_request = json.loads(raw)
+    try:
+        order_request = json.loads(raw)
+        symbol = order_request["symbol"]
+        order_request["side"]
+        order_request["size"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        state["execution_result"] = {"executed": False, "reason": "invalid_order_request"}
+        return state
     state["order_request"] = order_request
-
-    symbol = order_request["symbol"]
     position = delta.get_position(symbol)
     existing_size = position["size"] if position else 0
     context = {

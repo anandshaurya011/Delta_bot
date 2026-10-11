@@ -78,3 +78,9 @@ def test_product_cache_is_per_environment(monkeypatch):
     t1 = delta.use_credentials("k", "s", "india_prod"); a = delta.get_product_id("BTCUSD"); delta._CREDS.reset(t1)
     t2 = delta.use_credentials("k", "s", "india_testnet"); b = delta.get_product_id("BTCUSD"); delta._CREDS.reset(t2)
     assert a != b and calls == ["india_prod", "india_testnet"]
+
+
+def test_unknown_env_is_rejected():
+    with pytest.raises(ValueError):
+        delta.use_credentials("k", "s", "bogus")
+    assert delta._CREDS.get() is None

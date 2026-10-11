@@ -115,13 +115,15 @@ class CredentialsMissing(RuntimeError):
 
 def use_credentials(api_key: str | None, api_secret: str | None, env: str) -> contextvars.Token:
     """Bind credentials to the current context. Empty keys mean 'none' -- the process globals are NOT consulted."""
+    if env not in BASE_URLS:
+        raise ValueError(f"unknown Delta environment {env!r}; expected one of {sorted(BASE_URLS)}")
     return _CREDS.set((api_key or None, api_secret or None, env))
 
 
 def _active() -> tuple[str | None, str | None, str]:
     c = _CREDS.get()
     if c is not None:
-        return c[0], c[1], BASE_URLS.get(c[2], BASE_URLS["india_prod"])
+        return c[0], c[1], BASE_URLS[c[2]]
     return API_KEY, API_SECRET, BASE_URL
 
 

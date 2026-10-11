@@ -442,6 +442,7 @@ class AiSettingsIn(BaseModel):
     data_prompt: str | None = None
     executer_prompt: str | None = None
     guardrails_json: dict[str, Any] | None = None
+    paper_trading: bool | None = None
 
 
 class WebhookSignalIn(BaseModel):
@@ -475,10 +476,37 @@ def get_ai_signals(limit: int = Query(50, ge=1, le=500)):
     return store.list_signals(auth.user_id_var.get(), limit)
 
 
+@app.get("/ai/paper-trades", tags=["ai"])
+def get_ai_paper_trades(limit: int = Query(100, ge=1, le=500)):
+    return store.list_paper_trades(auth.user_id_var.get(), limit)
+
+
+@app.get("/ai/paper-trades/summary", tags=["ai"])
+def get_ai_paper_trades_summary():
+    return store.get_paper_pnl_summary(auth.user_id_var.get())
+
+
+class ClosePaperTradeIn(BaseModel):
+    exit_price: float | None = None
+
+
+@app.post("/ai/paper-trades/{trade_id}/close", tags=["ai"])
+def post_close_paper_trade(trade_id: int, body: ClosePaperTradeIn):
+    trades = store.list_paper_trades(auth.user_id_var.get())
+    trade = next((t for t in trades if t["id"] == trade_id), None)
+    if not trade:
+        raise HTTPException(404, "Unknown paper trade")
+    exit_price = body.exit_price if body.exit_price is not None else delta.get_current_price(trade["symbol"])
+    closed = store.close_paper_trade(trade_id, exit_price)
+    if not closed:
+        raise HTTPException(409, "Trade already closed")
+    return closed
+
+
 def _run_signal_pipeline(signal_id: int, user_id: str, signal: dict[str, Any]) -> None:
     settings = store.get_or_create_ai_settings(user_id)
     try:
-        result = ai_pipeline.run_pipeline(user_id, signal, settings)
+        result = ai_pipeline.run_pipeline(user_id, signal, settings, signal_id=signal_id)
         store.update_signal_result(signal_id, "done", result)
         if result["execution_result"].get("reason") == "guardrail:max_daily_loss":
             store.update_ai_settings(user_id, enabled=False)

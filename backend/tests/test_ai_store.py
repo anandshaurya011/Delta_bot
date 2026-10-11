@@ -152,3 +152,51 @@ def test_list_chat_messages_limit_keeps_oldest_first_order(store):
     store.add_chat_message("user_1", "user", "c")
     rows = store.list_chat_messages("user_1", limit=2)
     assert [r["content"] for r in rows] == ["b", "c"]
+
+
+def test_ai_settings_defaults_paper_trading_off(store):
+    row = store.get_or_create_ai_settings("user_1")
+    assert row["paper_trading"] == 0
+
+
+def test_update_ai_settings_toggles_paper_trading(store):
+    store.get_or_create_ai_settings("user_1")
+    row = store.update_ai_settings("user_1", paper_trading=True)
+    assert row["paper_trading"] == 1
+
+
+def test_paper_trade_lifecycle(store):
+    trade_id = store.record_paper_trade("user_1", "BTCUSD", "buy", 5, 50000.0, signal_id=3)
+    open_trades = store.list_paper_trades("user_1")
+    assert len(open_trades) == 1
+    assert open_trades[0]["status"] == "open"
+    assert open_trades[0]["signal_id"] == 3
+
+    closed = store.close_paper_trade(trade_id, 50100.0)
+    assert closed["status"] == "closed"
+    assert closed["pnl"] == (50100.0 - 50000.0) * 5
+
+    summary = store.get_paper_pnl_summary("user_1")
+    assert summary["realized_pnl"] == 500.0
+    assert summary["closed_trades"] == 1
+    assert summary["open_trades"] == 0
+    assert summary["win_rate"] == 1.0
+
+
+def test_paper_trade_short_side_pnl_is_inverted(store):
+    trade_id = store.record_paper_trade("user_1", "BTCUSD", "sell", 5, 50000.0)
+    closed = store.close_paper_trade(trade_id, 49000.0)
+    assert closed["pnl"] == (50000.0 - 49000.0) * 5
+
+
+def test_closing_an_already_closed_trade_returns_none(store):
+    trade_id = store.record_paper_trade("user_1", "BTCUSD", "buy", 5, 50000.0)
+    store.close_paper_trade(trade_id, 50100.0)
+    assert store.close_paper_trade(trade_id, 50200.0) is None
+
+
+def test_paper_trades_are_scoped_per_user(store):
+    store.record_paper_trade("user_1", "BTCUSD", "buy", 5, 50000.0)
+    store.record_paper_trade("user_2", "ETHUSD", "buy", 5, 3000.0)
+    assert len(store.list_paper_trades("user_1")) == 1
+    assert store.list_paper_trades("user_1")[0]["symbol"] == "BTCUSD"

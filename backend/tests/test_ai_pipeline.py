@@ -158,6 +158,48 @@ def test_executer_node_places_order_and_confirms_fill():
     mock_inc.assert_called_once()
 
 
+def test_executer_node_paper_trading_skips_real_order_and_records_paper_trade():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    state["settings"]["paper_trading"] = True
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 5})
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.delta.get_current_price", return_value=50000.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count") as mock_inc, \
+         patch("ai_pipeline.store.record_paper_trade", return_value=7) as mock_record, \
+         patch("ai_pipeline.delta.place_order") as mock_place, \
+         patch("ai_pipeline.delta.get_order_by_id") as mock_get_order:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    mock_get_order.assert_not_called()
+    mock_record.assert_called_once_with("user_1", "BTCUSD", "buy", 5, 50000.0, signal_id=None)
+    mock_inc.assert_called_once()
+    assert state["execution_result"] == {
+        "executed": True,
+        "mode": "paper",
+        "paper_trade_id": 7,
+        "fill_status": "filled",
+        "order": {"symbol": "BTCUSD", "side": "buy", "size": 5, "price": 50000.0},
+    }
+
+
+def test_executer_node_paper_trading_still_enforces_guardrails():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    state["settings"]["paper_trading"] = True
+    state["settings"]["guardrails_json"] = {"max_position_size": {"enabled": True, "value": 1}}
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 5})
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.record_paper_trade") as mock_record:
+        state = ai_pipeline.executer_node(state)
+    mock_record.assert_not_called()
+    assert state["execution_result"]["executed"] is False
+
+
 def test_executer_node_rejects_order_wildly_out_of_proportion_to_size_hint():
     # Regression: seen in manual testing, size_hint 0.5 turned into order size 50 (100x).
     state = _state(plan={"action": "open", "side": "long", "size_hint": 0.5, "reasoning": "go long"})

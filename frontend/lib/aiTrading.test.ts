@@ -1,6 +1,13 @@
 // frontend/lib/aiTrading.test.ts
 import { expect, it } from "vitest";
-import { validateCooldownMinutes, validateSymbolAllowlist, formatGuardrailSummary, type AiSettings } from "./aiTrading";
+import {
+  validateCooldownMinutes,
+  validateSymbolAllowlist,
+  formatGuardrailSummary,
+  formatPaperPnlSummary,
+  type AiSettings,
+  type PaperPnlSummary,
+} from "./aiTrading";
 
 it("validates cooldown minutes", () => {
   expect(validateCooldownMinutes(0)).toMatch(/at least/i);
@@ -25,6 +32,7 @@ const baseSettings: AiSettings = {
   data_prompt: "",
   executer_prompt: "",
   guardrails_json: {},
+  paper_trading: false,
   updated_at: 0,
 };
 
@@ -42,4 +50,14 @@ it("summarizes enabled guardrail count", () => {
     },
   };
   expect(formatGuardrailSummary(settings)).toBe("2 guardrails active");
+});
+
+it("formats paper P&L summary with a positive result", () => {
+  const summary: PaperPnlSummary = { realized_pnl: 123.45, closed_trades: 4, open_trades: 1, win_rate: 0.75 };
+  expect(formatPaperPnlSummary(summary)).toBe("+123.45 realized over 4 closed trades (75% win rate), 1 open");
+});
+
+it("formats paper P&L summary with no closed trades", () => {
+  const summary: PaperPnlSummary = { realized_pnl: 0, closed_trades: 0, open_trades: 2, win_rate: null };
+  expect(formatPaperPnlSummary(summary)).toBe("0.00 realized over 0 closed trades (— win rate), 2 open");
 });

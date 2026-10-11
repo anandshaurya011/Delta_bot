@@ -28,6 +28,7 @@ def _get_client() -> OpenAI:
 class PipelineState(TypedDict, total=False):
     user_id: str
     signal: dict[str, Any]
+    signal_id: int | None
     settings: dict[str, Any]
     gathered_data: dict[str, Any]
     plan: dict[str, Any] | None
@@ -266,6 +267,25 @@ def executer_node(
         state["execution_result"] = {"executed": False, "reason": guardrail_result.reason}
         return state
 
+    if settings.get("paper_trading"):
+        # Paper trading: every check above (validation, guardrails) ran exactly as it
+        # would for a real trade -- only the exchange call is skipped, replaced with an
+        # immediate simulated fill at the current market price. No real order is placed.
+        price = delta.get_current_price(symbol)
+        trade_id = store.record_paper_trade(
+            state["user_id"], symbol, order_request["side"], order_request["size"], price,
+            signal_id=state.get("signal_id"),
+        )
+        store.increment_trade_count(state["user_id"])
+        state["execution_result"] = {
+            "executed": True,
+            "mode": "paper",
+            "paper_trade_id": trade_id,
+            "fill_status": "filled",
+            "order": {"symbol": symbol, "side": order_request["side"], "size": order_request["size"], "price": price},
+        }
+        return state
+
     order = delta.place_order(symbol, order_request["side"], order_request["size"])
     fill = wait_for_fill(order["id"])
     if fill["outcome"] in ("filled", "partially_filled"):
@@ -294,11 +314,13 @@ def run_pipeline(
     signal: dict[str, Any],
     settings: dict[str, Any],
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    signal_id: int | None = None,
 ) -> dict[str, Any]:
     bind_user_credentials(user_id)
     state: PipelineState = {
         "user_id": user_id,
         "signal": signal,
+        "signal_id": signal_id,
         "settings": settings,
         "gathered_data": {},
         "plan": None,

@@ -88,6 +88,7 @@ def handle_chat_message(user_id: str, message: str, settings: dict[str, Any], on
             return
 
         state["signal"] = {"symbol": symbol, "timeframe": timeframe, "action": action, "note": message}
+        state["signal_id"] = outcome["id"]
         try:
             state = ai_pipeline.coordinator_node(state, on_event=on_event)
             state = ai_pipeline.executer_node(state, on_event=on_event)

@@ -43,8 +43,19 @@ def _conn() -> sqlite3.Connection:
         "data_model text not null default 'gpt-4.1-mini', executer_model text not null default 'gpt-4.1-mini', "
         "coordinator_prompt text not null default '', data_prompt text not null default '', "
         "executer_prompt text not null default '', guardrails_json text not null default '{}', "
+        "paper_trading integer not null default 0, "
         "updated_at integer not null)"
     )
+    cols = {row["name"] for row in c.execute("pragma table_info(ai_settings)")}
+    if "paper_trading" not in cols:
+        c.execute("alter table ai_settings add column paper_trading integer not null default 0")
+    c.execute(
+        "create table if not exists ai_paper_trades(id integer primary key autoincrement, "
+        "user_id text not null, signal_id integer, ts integer not null, symbol text not null, "
+        "side text not null, size integer not null, entry_price real not null, "
+        "status text not null default 'open', exit_price real, closed_ts integer, pnl real)"
+    )
+    c.execute("create index if not exists ai_paper_user on ai_paper_trades(user_id, id)")
     c.execute(
         "create table if not exists ai_signals(id integer primary key autoincrement, user_id text not null, "
         "ts integer not null, symbol text not null, timeframe text not null, action text not null, note text, "
@@ -104,7 +115,7 @@ def list_events(user_id: str, limit: int = 100, action: str | None = None) -> li
 _AI_SETTINGS_COLS = (
     "user_id", "webhook_token", "enabled", "cooldown_minutes", "coordinator_model",
     "data_model", "executer_model", "coordinator_prompt", "data_prompt", "executer_prompt",
-    "guardrails_json", "updated_at",
+    "guardrails_json", "paper_trading", "updated_at",
 )
 
 
@@ -123,8 +134,8 @@ def get_or_create_ai_settings(user_id: str) -> dict[str, Any]:
         c.execute(
             "insert into ai_settings(user_id, webhook_token, enabled, cooldown_minutes, coordinator_model, "
             "data_model, executer_model, coordinator_prompt, data_prompt, executer_prompt, guardrails_json, "
-            "updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (user_id, token, 0, 30, "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-mini", "", "", "", "{}", int(time.time())),
+            "paper_trading, updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (user_id, token, 0, 30, "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-mini", "", "", "", "{}", 0, int(time.time())),
         )
         row = c.execute("select * from ai_settings where user_id=?", (user_id,)).fetchone()
         return _ai_settings_to_dict(row)
@@ -263,3 +274,61 @@ def list_chat_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
             (user_id, limit),
         ).fetchall()
     return [dict(r) for r in reversed(rows)]
+
+
+def record_paper_trade(
+    user_id: str, symbol: str, side: str, size: int, entry_price: float, signal_id: int | None = None
+) -> int:
+    with closing(_conn()) as c:
+        cur = c.execute(
+            "insert into ai_paper_trades(user_id, signal_id, ts, symbol, side, size, entry_price, status) "
+            "values(?,?,?,?,?,?,?, 'open')",
+            (user_id, signal_id, int(time.time()), symbol, side, size, entry_price),
+        )
+        return cur.lastrowid
+
+
+def close_paper_trade(trade_id: int, exit_price: float) -> dict[str, Any] | None:
+    with closing(_conn()) as c:
+        row = c.execute("select * from ai_paper_trades where id=?", (trade_id,)).fetchone()
+        if not row or row["status"] != "open":
+            return None
+        direction = 1 if row["side"] == "buy" else -1
+        pnl = (exit_price - row["entry_price"]) * row["size"] * direction
+        c.execute(
+            "update ai_paper_trades set status='closed', exit_price=?, closed_ts=?, pnl=? where id=?",
+            (exit_price, int(time.time()), pnl, trade_id),
+        )
+        row = c.execute("select * from ai_paper_trades where id=?", (trade_id,)).fetchone()
+        return dict(row)
+
+
+def list_paper_trades(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    with closing(_conn()) as c:
+        rows = c.execute(
+            "select * from ai_paper_trades where user_id=? order by id desc limit ?",
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_paper_pnl_summary(user_id: str) -> dict[str, Any]:
+    with closing(_conn()) as c:
+        row = c.execute(
+            "select coalesce(sum(pnl), 0) as realized_pnl, "
+            "count(*) as closed_trades, "
+            "sum(case when pnl > 0 then 1 else 0 end) as wins "
+            "from ai_paper_trades where user_id=? and status='closed'",
+            (user_id,),
+        ).fetchone()
+        open_count = c.execute(
+            "select count(*) as n from ai_paper_trades where user_id=? and status='open'", (user_id,)
+        ).fetchone()["n"]
+    closed = row["closed_trades"] or 0
+    wins = row["wins"] or 0
+    return {
+        "realized_pnl": row["realized_pnl"],
+        "closed_trades": closed,
+        "open_trades": open_count,
+        "win_rate": (wins / closed) if closed else None,
+    }

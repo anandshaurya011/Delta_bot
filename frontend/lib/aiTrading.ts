@@ -12,8 +12,38 @@ export type AiSettings = {
   data_prompt: string;
   executer_prompt: string;
   guardrails_json: Record<string, GuardrailConfig>;
+  paper_trading: boolean;
   updated_at: number;
 };
+
+export type PaperTrade = {
+  id: number;
+  user_id: string;
+  signal_id: number | null;
+  ts: number;
+  symbol: string;
+  side: "buy" | "sell";
+  size: number;
+  entry_price: number;
+  status: "open" | "closed";
+  exit_price: number | null;
+  closed_ts: number | null;
+  pnl: number | null;
+};
+
+export type PaperPnlSummary = {
+  realized_pnl: number;
+  closed_trades: number;
+  open_trades: number;
+  win_rate: number | null;
+};
+
+export function formatPaperPnlSummary(summary: PaperPnlSummary): string {
+  const pnl = summary.realized_pnl.toFixed(2);
+  const sign = summary.realized_pnl > 0 ? "+" : "";
+  const winRate = summary.win_rate == null ? "—" : `${(summary.win_rate * 100).toFixed(0)}%`;
+  return `${sign}${pnl} realized over ${summary.closed_trades} closed trade${summary.closed_trades === 1 ? "" : "s"} (${winRate} win rate), ${summary.open_trades} open`;
+}
 
 export type AiSignal = {
   id: number;

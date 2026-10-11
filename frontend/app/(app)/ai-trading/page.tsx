@@ -6,9 +6,11 @@ import { Chip } from "@/components/Ui";
 import {
   type AiSettings,
   type AiSignal,
+  type PaperPnlSummary,
   validateCooldownMinutes,
   validateSymbolAllowlist,
   formatGuardrailSummary,
+  formatPaperPnlSummary,
 } from "@/lib/aiTrading";
 
 const ALL_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD"];
@@ -19,15 +21,18 @@ export default function AiTradingPage() {
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [signals, setSignals] = useState<AiSignal[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [paperSummary, setPaperSummary] = useState<PaperPnlSummary | null>(null);
 
   async function load() {
     try {
-      const [s, sigs] = await Promise.all([
+      const [s, sigs, paper] = await Promise.all([
         api<AiSettings>("GET", "/ai/settings"),
         api<AiSignal[]>("GET", "/ai/signals?limit=50"),
+        api<PaperPnlSummary>("GET", "/ai/paper-trades/summary"),
       ]);
       setSettings(s);
       setSignals(sigs);
+      setPaperSummary(paper);
     } catch (e) {
       toast(e instanceof ApiError ? e.message : "Failed to load AI trading settings", "err");
     }
@@ -89,11 +94,22 @@ export default function AiTradingPage() {
           Chat with the coordinator →
         </a>
         <p className="muted">{formatGuardrailSummary(settings)}</p>
+        {settings.paper_trading && paperSummary && (
+          <p className="muted">Paper trading: {formatPaperPnlSummary(paperSummary)}</p>
+        )}
 
         <div className="autoRow" style={{ alignItems: "center", gap: 10 }}>
           <label style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <input type="checkbox" checked={settings.enabled} onChange={(e) => save({ enabled: e.target.checked })} />
             Enable AI trading
+          </label>
+          <label style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={settings.paper_trading}
+              onChange={(e) => save({ paper_trading: e.target.checked })}
+            />
+            Paper trading (simulate, no real orders)
           </label>
           <label>
             Cooldown (minutes)

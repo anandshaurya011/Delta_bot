@@ -11,9 +11,10 @@ _queues: dict[str, queue.Queue] = {}
 
 
 def get_queue(user_id: str) -> queue.Queue:
-    if user_id not in _queues:
-        _queues[user_id] = queue.Queue(maxsize=_QUEUE_MAXSIZE)
-    return _queues[user_id]
+    # setdefault (not check-then-assign) so concurrent first calls for the same
+    # user_id all get the same Queue. The default Queue is built eagerly and
+    # discarded if the key already exists; that allocation is cheap.
+    return _queues.setdefault(user_id, queue.Queue(maxsize=_QUEUE_MAXSIZE))
 
 
 def publish(user_id: str, event: dict[str, Any]) -> None:

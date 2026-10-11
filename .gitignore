@@ -1,0 +1,18 @@
+.env
+.env.*
+**/.env
+**/.env.local
+.venv/
+node_modules/
+.next/
+__pycache__/
+*.pyc
+*.db
+*.sqlite*
+data.json
+delta_keys.txt
+*.mcpb
+trade_events.db
+next-env.d.ts
+.superpowers/
+backend (Copy)/

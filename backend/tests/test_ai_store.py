@@ -136,9 +136,19 @@ def test_add_and_list_chat_messages_oldest_first(store):
 
 
 def test_list_chat_messages_respects_limit_and_user_scope(store):
+    # The globally newest row belongs to user_2, so a missing user_id filter
+    # would return "b" here and fail the assertion.
     store.add_chat_message("user_1", "user", "a")
-    store.add_chat_message("user_2", "user", "b")
     store.add_chat_message("user_1", "user", "c")
+    store.add_chat_message("user_2", "user", "b")
     rows = store.list_chat_messages("user_1", limit=1)
     assert len(rows) == 1
     assert rows[0]["content"] == "c"
+
+
+def test_list_chat_messages_limit_keeps_oldest_first_order(store):
+    store.add_chat_message("user_1", "user", "a")
+    store.add_chat_message("user_1", "assistant", "b")
+    store.add_chat_message("user_1", "user", "c")
+    rows = store.list_chat_messages("user_1", limit=2)
+    assert [r["content"] for r in rows] == ["b", "c"]

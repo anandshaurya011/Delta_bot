@@ -1,7 +1,7 @@
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -48,3 +48,27 @@ def test_coordinator_node_includes_custom_instructions_in_prompt():
         ai_pipeline.coordinator_node(state)
     _, kwargs = mock_call.call_args
     assert "Never trade on Fridays." in kwargs["system_prompt"]
+
+
+def test_bind_user_credentials_uses_stored_creds():
+    fake_creds = MagicMock(api_key="k", api_secret="s", env="india_testnet")
+    with patch("ai_pipeline.store.get_credentials", return_value=fake_creds) as mock_get, \
+         patch("ai_pipeline.delta.use_credentials") as mock_use:
+        ai_pipeline.bind_user_credentials("user_1")
+    mock_get.assert_called_once_with("user_1")
+    mock_use.assert_called_once_with("k", "s", "india_testnet")
+
+
+def test_data_agent_node_runs_requested_tool_calls_and_fills_gathered_data():
+    tool_call_response = json.dumps({"tool_calls": [{"name": "get_position", "args": {"symbol": "BTCUSD"}}]})
+    with patch("ai_pipeline.call_llm", return_value=tool_call_response), \
+         patch("ai_pipeline.delta.get_position", return_value={"size": 5, "entry_price": "100"}) as mock_pos:
+        state = ai_pipeline.data_agent_node(_state())
+    mock_pos.assert_called_once_with("BTCUSD")
+    assert state["gathered_data"]["get_position"] == {"size": 5, "entry_price": "100"}
+
+
+def test_data_agent_node_with_no_tool_calls_leaves_gathered_data_empty():
+    with patch("ai_pipeline.call_llm", return_value=json.dumps({"tool_calls": []})):
+        state = ai_pipeline.data_agent_node(_state())
+    assert state["gathered_data"] == {}

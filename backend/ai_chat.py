@@ -21,8 +21,13 @@ _INTENT_PROMPT = (
 )
 
 _CHAT_ANSWER_PROMPT = (
-    "You are the coordinator agent for an automated trading system, answering a user's "
-    "question using the market/position data already gathered. Be concise and direct."
+    "You are the coordinator agent for an automated trading system. You work with two "
+    "other agents on every signal: a data_agent that gathers market/position data for "
+    "you, and an executer that turns your plan into a validated order (guardrail checks "
+    "and fill verification both happen in plain Python, never by an LLM). The "
+    "\"gathered_data\" field below is what the data_agent already fetched for this "
+    "message's symbol; if it's empty, no symbol was available to look up and you should "
+    "say so rather than inventing data. Be concise and direct."
 )
 
 _REQUIRED_TRADE_KEYS = ("symbol", "timeframe", "action")
@@ -81,7 +86,9 @@ def handle_chat_message(
             reply = ai_pipeline.call_llm(
                 model=settings["coordinator_model"],
                 system_prompt=_CHAT_ANSWER_PROMPT,
-                user_content=json.dumps({"message": message, "gathered_data": state["gathered_data"]}),
+                user_content=json.dumps(
+                    {"message": message, "symbol": state["signal"]["symbol"] or None, "gathered_data": state["gathered_data"]}
+                ),
                 on_chunk=on_chunk,
                 json_mode=False,
             )
@@ -101,6 +108,14 @@ def handle_chat_message(
         state["signal"] = {"symbol": symbol, "timeframe": timeframe, "action": action, "note": message}
         state["signal_id"] = outcome["id"]
         try:
+            # The data_agent ran once already, above, but against the generic signal
+            # built from the currently-viewed symbol/raw message -- that can name a
+            # different symbol than the one the coordinator just resolved this message
+            # into a trade for (e.g. viewing BTCUSD but typing "go long ETH"). Re-run it
+            # now against the actual trade signal so the coordinator plans the trade
+            # using data for the symbol it is actually about to act on, not a stale or
+            # mismatched one.
+            state = ai_pipeline.data_agent_node(state, on_event=on_event)
             state = ai_pipeline.coordinator_node(state, on_event=on_event)
             state = ai_pipeline.executer_node(state, on_event=on_event)
             result = {

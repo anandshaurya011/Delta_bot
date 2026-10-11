@@ -67,6 +67,19 @@ def test_handle_chat_message_passes_symbol_into_data_agent_signal():
     assert captured["signal"]["note"] == "get the data and analyse"
 
 
+def test_handle_chat_message_question_path_grounds_llm_with_symbol():
+    with patch("ai_chat.store.add_chat_message"), \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: {**state, "gathered_data": {"get_price": 50000}}), \
+         patch("ai_chat.resolve_chat_intent", return_value={"intent": "question"}), \
+         patch("ai_chat.ai_pipeline.call_llm", return_value="BTC is around $50,000.") as mock_call:
+        ai_chat.handle_chat_message("user_1", "what's the price?", BASE_SETTINGS, lambda e: None, symbol="BTCUSD")
+    _, kwargs = mock_call.call_args
+    user_content = json.loads(kwargs["user_content"])
+    assert user_content["symbol"] == "BTCUSD"
+    assert user_content["gathered_data"] == {"get_price": 50000}
+
+
 def test_handle_chat_message_question_path_never_calls_record_incoming_signal():
     with patch("ai_chat.store.add_chat_message") as mock_add, \
          patch("ai_chat.ai_pipeline.bind_user_credentials"), \
@@ -131,6 +144,41 @@ def test_handle_chat_message_trade_path_calls_record_incoming_signal_and_execute
         "order_request": {"symbol": "BTCUSD", "side": "buy", "size": 0},
         "execution_result": {"executed": False, "reason": "no_action"},
     })
+
+
+def test_handle_chat_message_trade_path_regathers_data_for_the_resolved_trade_symbol():
+    # Regression: the data_agent ran once up front against the chat's generic/viewed-
+    # symbol signal. If the trade instruction names a DIFFERENT symbol (e.g. viewing
+    # BTCUSD, typing "go long ETH"), the coordinator was planning the trade using data
+    # gathered for the wrong symbol entirely. It must be re-gathered for the actual
+    # trade signal before the coordinator sees it.
+    signals_seen = []
+
+    def fake_data_agent(state, on_event=None):
+        signals_seen.append(dict(state["signal"]))
+        return {**state, "gathered_data": {"symbol_queried": state["signal"]["symbol"]}}
+
+    captured_coordinator_input = {}
+
+    def fake_coordinator(state, on_event=None):
+        captured_coordinator_input["gathered_data"] = state["gathered_data"]
+        return {**state, "plan": {"action": "hold", "side": "none", "size_hint": None, "reasoning": "x"}}
+
+    with patch("ai_chat.store.add_chat_message"), \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=fake_data_agent), \
+         patch("ai_chat.resolve_chat_intent", return_value={"intent": "trade", "symbol": "ETHUSD", "timeframe": "15m", "action": "buy"}), \
+         patch("ai_chat.store.record_incoming_signal", return_value={"id": 9, "status": "processing"}), \
+         patch("ai_chat.ai_pipeline.coordinator_node", side_effect=fake_coordinator), \
+         patch("ai_chat.ai_pipeline.executer_node", side_effect=lambda state, on_event=None: {**state, "order_request": None, "execution_result": {"executed": False, "reason": "no_action"}}), \
+         patch("ai_chat.store.update_signal_result"):
+        ai_chat.handle_chat_message("user_1", "go long ETH", BASE_SETTINGS, lambda e: None, symbol="BTCUSD")
+
+    # First call: generic chat signal using the viewed symbol (BTCUSD). Second call:
+    # the resolved trade signal (ETHUSD) -- and the coordinator must see THAT data.
+    assert signals_seen[0]["symbol"] == "BTCUSD"
+    assert signals_seen[1]["symbol"] == "ETHUSD"
+    assert captured_coordinator_input["gathered_data"] == {"symbol_queried": "ETHUSD"}
 
 
 def test_handle_chat_message_trade_path_skips_pipeline_when_duplicate_skipped():

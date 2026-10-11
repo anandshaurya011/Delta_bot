@@ -151,6 +151,10 @@ def get_user_id_by_webhook_token(token: str) -> str | None:
 
 
 AI_DEDUP_WINDOW_SECONDS = 120
+# Generous relative to the 10s fill-verification timeout plus LLM call latency, but
+# short enough that a crash mid-pipeline (leaving a row stuck at status="processing")
+# doesn't permanently block every future signal for that (user_id, timeframe).
+AI_PROCESSING_STALE_SECONDS = 120
 
 
 def _dedup_key(symbol: str, timeframe: str, action: str, note: str | None) -> str:
@@ -171,8 +175,8 @@ def record_incoming_signal(
                 (user_id, key, now - AI_DEDUP_WINDOW_SECONDS),
             ).fetchone()
             inflight = c.execute(
-                "select id from ai_signals where user_id=? and timeframe=? and status='processing' limit 1",
-                (user_id, timeframe),
+                "select id from ai_signals where user_id=? and timeframe=? and status='processing' and ts > ? limit 1",
+                (user_id, timeframe, now - AI_PROCESSING_STALE_SECONDS),
             ).fetchone()
             if dup or inflight:
                 status = "duplicate_skipped"

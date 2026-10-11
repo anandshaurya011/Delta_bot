@@ -136,6 +136,10 @@ def wait_for_fill(order_id: int, timeout_s: float = 10.0, interval_s: float = 1.
         if state == "closed":
             return {"outcome": "partially_filled", "order": order}
         if state in ("cancelled", "rejected"):
+            size = order.get("size", 0)
+            unfilled = order.get("unfilled_size", size)
+            if unfilled < size:
+                return {"outcome": "partially_filled", "order": order}
             return {"outcome": "exchange_rejected", "order": order}
         if _time.time() >= deadline:
             return {"outcome": "unfilled_timeout", "order": order}
@@ -157,14 +161,37 @@ def executer_node(state: PipelineState) -> PipelineState:
     try:
         order_request = json.loads(raw)
         symbol = order_request["symbol"]
-        order_request["side"]
-        order_request["size"]
+        side = order_request["side"]
+        size = order_request["size"]
     except (json.JSONDecodeError, KeyError, TypeError):
         state["execution_result"] = {"executed": False, "reason": "invalid_order_request"}
         return state
+
+    # Deterministic Python-only validation of the executer's LLM output, with zero
+    # LLM involvement -- the LLM is never consulted on whether a trade is allowed.
+    # This goes beyond "do the keys exist" (checked above) to validate VALUES, so
+    # a negative/zero/float/bool size, a bogus side, or a symbol the executer's LLM
+    # swapped in for the original signal's symbol can never reach guardrails/the exchange.
+    if side not in ("buy", "sell"):
+        state["execution_result"] = {"executed": False, "reason": "invalid_order_request"}
+        return state
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        state["execution_result"] = {"executed": False, "reason": "invalid_order_request"}
+        return state
+    if symbol != state["signal"]["symbol"]:
+        state["execution_result"] = {"executed": False, "reason": "invalid_order_request"}
+        return state
+
     state["order_request"] = order_request
     position = delta.get_position(symbol)
     existing_size = position["size"] if position else 0
+    # KNOWN LIMITATION: the max_daily_loss guardrail is supposed to use today's
+    # realized+unrealized P&L (per spec), but get_total_unrealized_pnl() returns
+    # LIFETIME open unrealized P&L -- it does not reflect P&L realized earlier today
+    # (e.g. from a position closed at a loss) and can be skewed by old open positions'
+    # unrealized P&L that has nothing to do with today. Computing the correct figure
+    # requires a new delta_api.py function that aggregates today's fills/wallet
+    # transactions by date; that is not yet implemented, so this remains a known gap.
     context = {
         "existing_position_size": existing_size,
         "trades_today": store.get_trade_count_today(state["user_id"]),

@@ -80,6 +80,21 @@ def test_record_incoming_signal_single_flight_blocks_same_timeframe(store):
     assert second["status"] == "duplicate_skipped"
 
 
+def test_record_incoming_signal_stale_processing_row_does_not_block(store, monkeypatch):
+    import time as time_module
+
+    real_time = time_module.time
+    # Insert a "processing" row simulating a crash that happened well before the
+    # staleness threshold (AI_PROCESSING_STALE_SECONDS).
+    monkeypatch.setattr(time_module, "time", lambda: real_time() - store.AI_PROCESSING_STALE_SECONDS - 10)
+    first = store.record_incoming_signal("user_1", "BTCUSD", "15m", "buy", "a", cooldown_minutes=30)
+    assert first["status"] == "processing"
+
+    monkeypatch.setattr(time_module, "time", real_time)
+    second = store.record_incoming_signal("user_1", "ETHUSD", "15m", "sell", "b", cooldown_minutes=30)
+    assert second["status"] == "processing"
+
+
 def test_record_incoming_signal_different_timeframe_not_blocked(store):
     store.record_incoming_signal("user_1", "BTCUSD", "15m", "buy", "a", cooldown_minutes=30)
     other = store.record_incoming_signal("user_1", "BTCUSD", "1h", "buy", "a", cooldown_minutes=30)

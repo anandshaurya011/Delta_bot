@@ -165,6 +165,98 @@ def test_executer_node_handles_missing_required_field_from_llm():
     assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
 
 
+def test_executer_node_rejects_invalid_side():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "hold", "size": 5})
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_executer_node_rejects_float_size():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 5.5})
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_executer_node_rejects_zero_or_negative_size():
+    for bad_size in (0, -3):
+        state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+        order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": bad_size})
+        with patch("ai_pipeline.call_llm", return_value=order_response), \
+             patch("ai_pipeline.delta.place_order") as mock_place:
+            state = ai_pipeline.executer_node(state)
+        mock_place.assert_not_called()
+        assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_executer_node_rejects_bool_size():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": True})
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_executer_node_rejects_symbol_mismatch_with_signal():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "ETHUSD", "side": "buy", "size": 5})  # signal symbol is BTCUSD
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_executer_node_daily_pnl_context_comes_from_lifetime_unrealized_pnl():
+    # Documents the known limitation (see comment in ai_pipeline.executer_node): daily_pnl
+    # is currently sourced from get_total_unrealized_pnl() (lifetime open unrealized P&L),
+    # not today's realized+unrealized P&L. This test pins that behavior so the code comment
+    # can't silently drift from reality.
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 5})
+    placed_order = {"id": 42}
+    filled_order = {"id": 42, "state": "closed", "unfilled_size": 0}
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=-999.0) as mock_pnl, \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count"), \
+         patch("ai_pipeline.delta.place_order", return_value=placed_order), \
+         patch("ai_pipeline.delta.get_order_by_id", return_value=filled_order), \
+         patch("ai_pipeline.evaluate_guardrails", wraps=ai_pipeline.evaluate_guardrails) as mock_guard:
+        ai_pipeline.executer_node(state)
+    mock_pnl.assert_called_once()
+    _, _, context = mock_guard.call_args[0]
+    assert context["daily_pnl"] == -999.0
+
+
+def test_wait_for_fill_cancelled_with_partial_fill_returns_partially_filled():
+    with patch(
+        "ai_pipeline.delta.get_order_by_id",
+        return_value={"id": 1, "state": "cancelled", "size": 10, "unfilled_size": 4},
+    ):
+        result = ai_pipeline.wait_for_fill(1, timeout_s=1, interval_s=0.01)
+    assert result["outcome"] == "partially_filled"
+
+
+def test_wait_for_fill_cancelled_with_nothing_filled_returns_exchange_rejected():
+    with patch(
+        "ai_pipeline.delta.get_order_by_id",
+        return_value={"id": 1, "state": "cancelled", "size": 10, "unfilled_size": 10},
+    ):
+        result = ai_pipeline.wait_for_fill(1, timeout_s=1, interval_s=0.01)
+    assert result["outcome"] == "exchange_rejected"
+
+
 def test_run_pipeline_wires_all_three_nodes_in_order():
     data_response = json.dumps({"tool_calls": []})
     plan_response = json.dumps({"action": "hold", "side": "none", "size_hint": None, "reasoning": "no edge"})

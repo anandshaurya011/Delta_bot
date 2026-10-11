@@ -10,17 +10,20 @@ NOTE: order endpoints place REAL orders on the calling user's Delta account.
 from __future__ import annotations
 
 import functools
+import json
 import sys
 from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv(Path(__file__).resolve().parent / ".env")
+import ai_chat  # noqa: E402
+import ai_chat_stream  # noqa: E402
 import ai_pipeline  # noqa: E402
 import auth  # noqa: E402
 import delta_api as delta  # noqa: E402
@@ -496,3 +499,46 @@ def tradingview_webhook(token: str, body: WebhookSignalIn, background_tasks: Bac
         signal = {"symbol": body.symbol, "timeframe": body.timeframe, "action": body.action, "note": body.note}
         background_tasks.add_task(_run_signal_pipeline, outcome["id"], user_id, signal)
     return {"status": outcome["status"]}
+
+
+class ChatMessageIn(BaseModel):
+    message: str = Field(min_length=1)
+
+
+def _run_chat_message(user_id: str, message: str, settings: dict[str, Any]) -> None:
+    def on_event(event: dict[str, Any]) -> None:
+        # Hardening (Task 4 review carryover): on_event runs INSIDE handle_chat_message's
+        # trade-path try/except. ai_chat_stream.publish() can raise queue.Full under rare
+        # concurrent contention; letting that escape here would get caught by that
+        # except and misrecord a successful trade as an "error" outcome. Swallow it --
+        # a degraded live-thinking stream for one event is an acceptable trade-off.
+        try:
+            ai_chat_stream.publish(user_id, event)
+        except Exception:
+            pass
+
+    ai_chat.handle_chat_message(user_id, message, settings, on_event=on_event)
+
+
+@app.post("/ai/chat", tags=["ai"])
+def post_ai_chat(body: ChatMessageIn, background_tasks: BackgroundTasks):
+    user_id = auth.user_id_var.get()
+    settings = store.get_or_create_ai_settings(user_id)
+    background_tasks.add_task(_run_chat_message, user_id, body.message, settings)
+    return {"status": "processing"}
+
+
+@app.get("/ai/chat/stream", tags=["ai"])
+def get_ai_chat_stream():
+    user_id = auth.user_id_var.get()
+
+    def event_source():
+        for event in ai_chat_stream.drain(user_id):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_source(), media_type="text/event-stream")
+
+
+@app.get("/ai/chat/messages", tags=["ai"])
+def get_ai_chat_messages(limit: int = Query(100, ge=1, le=500)):
+    return store.list_chat_messages(auth.user_id_var.get(), limit)

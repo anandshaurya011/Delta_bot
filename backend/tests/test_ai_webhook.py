@@ -114,3 +114,68 @@ def test_webhook_missing_fields_is_422(client):
     token = client.get("/ai/settings").json()["webhook_token"]
     resp = client.post(f"/webhook/tv/{token}", json={"symbol": "BTCUSD"})
     assert resp.status_code == 422
+
+
+def test_post_ai_chat_question_does_not_require_ai_trading_enabled(client):
+    with patch("main.ai_chat.handle_chat_message") as mock_handle:
+        resp = client.post("/ai/chat", json={"message": "what's the price of BTC?"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "processing"
+    mock_handle.assert_called_once()
+    args = mock_handle.call_args.args
+    assert args[0] == "user_1"
+    assert args[1] == "what's the price of BTC?"
+
+
+def test_post_ai_chat_empty_message_is_422(client):
+    resp = client.post("/ai/chat", json={"message": ""})
+    assert resp.status_code == 422
+
+
+def test_get_ai_chat_messages_returns_store_contents(client):
+    import store
+    store.add_chat_message("user_1", "user", "hello")
+    resp = client.get("/ai/chat/messages")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body[0]["content"] == "hello"
+
+
+def test_get_ai_chat_stream_yields_published_events(client):
+    import ai_chat_stream
+    ai_chat_stream.publish("user_1", {"type": "token", "text": "hi"})
+    ai_chat_stream.publish("user_1", {"type": "done"})
+    resp = client.get("/ai/chat/stream")
+    assert resp.status_code == 200
+    assert "data:" in resp.text
+    assert '"type": "done"' in resp.text or '"type":"done"' in resp.text
+
+
+def test_publish_failure_inside_on_event_does_not_mark_trade_as_error(client):
+    """Mandatory hardening (Task 4 review carryover): ai_chat_stream.publish() can raise
+    queue.Full under rare contention. It runs as on_event from INSIDE
+    handle_chat_message's trade-path try/except, so a raw lambda calling publish would
+    get caught there and misreport a successful trade as an "error" outcome. The
+    on_event callback built in main.py must swallow that failure instead."""
+    import main as main_module
+    import store as store_module
+
+    captured = {}
+    orig_update_signal_result = store_module.update_signal_result
+
+    def spy_update_signal_result(signal_id, status, result):
+        captured["status"] = status
+        return orig_update_signal_result(signal_id, status, result)
+
+    with patch("main.ai_chat_stream.publish", side_effect=RuntimeError("queue.Full boom")), \
+         patch.object(store_module, "update_signal_result", side_effect=spy_update_signal_result), \
+         patch("main.ai_pipeline.bind_user_credentials"), \
+         patch("main.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: state), \
+         patch("main.ai_chat.resolve_chat_intent", return_value={"intent": "trade", "symbol": "BTCUSD", "timeframe": "15m", "action": "buy"}), \
+         patch("main.ai_pipeline.coordinator_node", side_effect=lambda state, on_event=None: {**state, "plan": {"reasoning": "ok"}}), \
+         patch("main.ai_pipeline.executer_node", side_effect=lambda state, on_event=None: {**state, "execution_result": {"executed": True}}):
+        settings = store_module.get_or_create_ai_settings("user_1")
+        settings["enabled"] = True
+        main_module._run_chat_message("user_1", "go long BTC", settings)
+
+    assert captured.get("status") != "error"

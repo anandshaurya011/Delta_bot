@@ -16,6 +16,7 @@ BASE_SETTINGS = {
     "executer_prompt": "",
     "guardrails_json": {},
     "cooldown_minutes": 30,
+    "enabled": True,
 }
 
 
@@ -58,6 +59,19 @@ def test_handle_chat_message_question_path_never_calls_record_incoming_signal():
     mock_record.assert_not_called()
     assert any(e.get("type") == "done" for e in events)
     # one user message, one assistant message
+
+
+def test_handle_chat_message_trade_intent_rejected_when_ai_trading_disabled():
+    disabled_settings = {**BASE_SETTINGS, "enabled": False}
+    with patch("ai_chat.store.add_chat_message") as mock_add, \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: state), \
+         patch("ai_chat.resolve_chat_intent", return_value={"intent": "trade", "symbol": "BTCUSD", "timeframe": "15m", "action": "buy"}), \
+         patch("ai_chat.store.record_incoming_signal") as mock_record:
+        events = []
+        ai_chat.handle_chat_message("user_1", "go long BTC", disabled_settings, events.append)
+    mock_record.assert_not_called()
+    assert mock_add.call_count == 2  # user message + the "disabled" explanation
     assert mock_add.call_count == 2
     assert mock_add.call_args_list[0].args[:2] == ("user_1", "user")
     assert mock_add.call_args_list[1].args[:2] == ("user_1", "assistant")

@@ -58,6 +58,14 @@ def handle_chat_message(user_id: str, message: str, settings: dict[str, Any], on
 
     intent = resolve_chat_intent(message, settings)
 
+    if intent["intent"] == "trade" and not settings.get("enabled"):
+        store.add_chat_message(
+            user_id, "assistant",
+            "AI trading is currently disabled in your settings, so I can't act on that -- enable it on the AI Trading page first.",
+        )
+        on_event({"type": "done"})
+        return
+
     if intent["intent"] == "question":
         on_chunk = lambda text: on_event({"node": "coordinator", "type": "token", "text": text})
         reply = ai_pipeline.call_llm(

@@ -85,6 +85,9 @@ export default function AiTradingPage() {
     <div>
       <section>
         <h2>AI Trading</h2>
+        <a href="/ai-trading/chat" className="btn ghost sm" style={{ marginBottom: 10, display: "inline-block" }}>
+          Chat with the coordinator →
+        </a>
         <p className="muted">{formatGuardrailSummary(settings)}</p>
 
         <div className="autoRow" style={{ alignItems: "center", gap: 10 }}>

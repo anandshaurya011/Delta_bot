@@ -124,3 +124,21 @@ def test_trade_count_increments_and_reads_back(store):
     store.increment_trade_count("user_1")
     store.increment_trade_count("user_1")
     assert store.get_trade_count_today("user_1") == 2
+
+
+def test_add_and_list_chat_messages_oldest_first(store):
+    id1 = store.add_chat_message("user_1", "user", "go long BTC")
+    id2 = store.add_chat_message("user_1", "assistant", "opened a long position", signal_id=7)
+    rows = store.list_chat_messages("user_1")
+    assert [r["id"] for r in rows] == [id1, id2]
+    assert rows[1]["signal_id"] == 7
+    assert rows[0]["signal_id"] is None
+
+
+def test_list_chat_messages_respects_limit_and_user_scope(store):
+    store.add_chat_message("user_1", "user", "a")
+    store.add_chat_message("user_2", "user", "b")
+    store.add_chat_message("user_1", "user", "c")
+    rows = store.list_chat_messages("user_1", limit=1)
+    assert len(rows) == 1
+    assert rows[0]["content"] == "c"

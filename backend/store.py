@@ -57,6 +57,12 @@ def _conn() -> sqlite3.Connection:
         "create table if not exists ai_trade_count(user_id text not null, day text not null, "
         "count integer not null default 0, primary key (user_id, day))"
     )
+    c.execute(
+        "create table if not exists ai_chat_messages(id integer primary key autoincrement, "
+        "user_id text not null, ts integer not null, role text not null, content text not null, "
+        "signal_id integer)"
+    )
+    c.execute("create index if not exists ai_chat_user on ai_chat_messages(user_id, id)")
     return c
 
 
@@ -238,3 +244,22 @@ def get_trade_count_today(user_id: str) -> int:
     with closing(_conn()) as c:
         row = c.execute("select count from ai_trade_count where user_id=? and day=?", (user_id, day)).fetchone()
     return row["count"] if row else 0
+
+
+def add_chat_message(user_id: str, role: str, content: str, signal_id: int | None = None) -> int:
+    with closing(_conn()) as c:
+        cur = c.execute(
+            "insert into ai_chat_messages(user_id, ts, role, content, signal_id) values(?,?,?,?,?)",
+            (user_id, int(time.time()), role, content, signal_id),
+        )
+        return cur.lastrowid
+
+
+def list_chat_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    with closing(_conn()) as c:
+        rows = c.execute(
+            "select id, ts, role, content, signal_id from ai_chat_messages "
+            "where user_id=? order by id desc limit ?",
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]

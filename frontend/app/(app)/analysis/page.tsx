@@ -65,14 +65,18 @@ export default function AnalysisPage() {
   const [state, setState] = useState<SnapState>({ snaps: [], idx: -1, key: "" });
   const [loading, setLoading] = useState(false);
 
+  const [ready, setReady] = useState(false);
   const loadingRef = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  // Load persisted settings before the first fetch fires, so it never races
+  // a default-selection request against the real one from localStorage.
   useEffect(() => {
     setSel(loadSel());
     setMarked(loadMark());
     setEvery(loadEvery());
+    setReady(true);
   }, []);
 
   function toggleTf(t: string) {
@@ -137,21 +141,24 @@ export default function AnalysisPage() {
     }
   }
 
-  // Re-fetch whenever symbol/selection/params change.
+  // Re-fetch whenever symbol/selection/params change. Waits for `ready` so the
+  // very first fetch uses the selection loaded from localStorage, not the
+  // placeholder default.
   useEffect(() => {
+    if (!ready) return;
     runAnalysis();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, sel, period, threshold, overbought, oversold]);
+  }, [ready, symbol, sel, period, threshold, overbought, oversold]);
 
   // Auto-refresh while visible.
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!ready || !autoRefresh) return;
     const id = setInterval(() => {
       if (!document.hidden) runAnalysis();
     }, every * 1000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, every, symbol, sel, period, threshold, overbought, oversold]);
+  }, [ready, autoRefresh, every, symbol, sel, period, threshold, overbought, oversold]);
 
   function showSnap(i: number) {
     setState((prev) => {

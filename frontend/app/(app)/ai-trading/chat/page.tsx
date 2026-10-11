@@ -3,7 +3,16 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useSymbol } from "@/lib/symbol";
-import { type ChatMessage, type ThinkingEvent, parseSseLine, groupEventsByNode, formatTokenStream } from "@/lib/aiChat";
+import {
+  type ChatMessage,
+  type ThinkingEvent,
+  type MarkdownBlock,
+  parseSseLine,
+  groupEventsByNode,
+  formatTokenStream,
+  parseLiteMarkdown,
+  parseInlineBold,
+} from "@/lib/aiChat";
 
 function isErrorMessage(content: string): boolean {
   return /^(something went wrong|error|skipped \()/i.test(content.trim());
@@ -11,6 +20,97 @@ function isErrorMessage(content: string): boolean {
 
 function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function Inline({ text }: { text: string }) {
+  return (
+    <>
+      {parseInlineBold(text).map((span, i) =>
+        span.bold ? <strong key={i}>{span.text}</strong> : <span key={i}>{span.text}</span>
+      )}
+    </>
+  );
+}
+
+function Markdown({ text }: { text: string }) {
+  const blocks: MarkdownBlock[] = parseLiteMarkdown(text);
+  return (
+    <>
+      {blocks.map((block, i) => {
+        if (block.type === "ul") {
+          return (
+            <ul key={i} style={{ margin: "4px 0", paddingLeft: 20 }}>
+              {block.items.map((item, j) => (
+                <li key={j}>
+                  <Inline text={item} />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        if (block.type === "ol") {
+          return (
+            <ol key={i} style={{ margin: "4px 0", paddingLeft: 20 }}>
+              {block.items.map((item, j) => (
+                <li key={j}>
+                  <Inline text={item} />
+                </li>
+              ))}
+            </ol>
+          );
+        }
+        return (
+          <p key={i} style={{ margin: i === 0 ? 0 : "8px 0 0" }}>
+            <Inline text={block.items[0]} />
+          </p>
+        );
+      })}
+    </>
+  );
+}
+
+function Avatar({ role }: { role: "user" | "assistant" }) {
+  return (
+    <div
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: "50%",
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 12,
+        fontWeight: 700,
+        background: role === "user" ? "var(--accent)" : "var(--panel)",
+        border: role === "user" ? "none" : "1px solid var(--line)",
+        color: role === "user" ? "#fff" : "var(--dim)",
+      }}
+    >
+      {role === "user" ? "U" : "AI"}
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const toast = useToast();
+  return (
+    <button
+      type="button"
+      className="btn ghost sm"
+      style={{ padding: "2px 7px", fontSize: 11 }}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          toast("Copied", "ok");
+        } catch {
+          toast("Copy failed", "err");
+        }
+      }}
+    >
+      Copy
+    </button>
+  );
 }
 
 export default function AiChatPage() {
@@ -22,6 +122,7 @@ export default function AiChatPage() {
   const [liveEvents, setLiveEvents] = useState<ThinkingEvent[]>([]);
   const esRef = useRef<EventSource | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   async function loadMessages() {
     try {
@@ -41,10 +142,25 @@ export default function AiChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, liveEvents]);
 
+  function autoGrow() {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  }
+
+  function stopGenerating() {
+    esRef.current?.close();
+    esRef.current = null;
+    setSending(false);
+    loadMessages();
+  }
+
   async function send() {
     const message = input.trim();
     if (!message || sending) return;
     setInput("");
+    requestAnimationFrame(autoGrow);
     setSending(true);
     setLiveEvents([]);
     setMessages((prev) => [
@@ -88,61 +204,92 @@ export default function AiChatPage() {
   const executerText = formatTokenStream(grouped.executer ?? []);
   const guardrailEvents = (grouped.executer ?? []).filter((e) => e.type === "guardrail_result");
 
-  return (
-    <div>
-      <section style={{ maxWidth: 760, margin: "0 auto", padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
-          <a href="/ai-trading" className="btn ghost sm">
-            ← AI Trading
-          </a>
-          <h2 style={{ margin: 0 }}>Chat with the coordinator</h2>
-          <span className="tag d" style={{ marginLeft: "auto" }}>
-            context: {symbol}
-          </span>
-        </div>
+  const SUGGESTIONS = ["What's the current price?", "Analyse the market and suggest a trade", "What's my open position?"];
 
-        <div
-          ref={scrollRef}
-          style={{
-            height: "56vh",
-            minHeight: 320,
-            overflowY: "auto",
-            padding: "16px 18px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
-          {messages.length === 0 && (
-            <p className="muted" style={{ textAlign: "center", marginTop: 40 }}>
-              Ask a question about the market, or tell the coordinator what to do — e.g. "go long BTC on the 15m".
-            </p>
-          )}
-          {messages.map((m) => {
-            const isUser = m.role === "user";
-            const isError = !isUser && isErrorMessage(m.content);
-            return (
-              <div
-                key={m.id}
-                style={{
-                  alignSelf: isUser ? "flex-end" : "flex-start",
-                  maxWidth: "82%",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 3,
-                  alignItems: isUser ? "flex-end" : "flex-start",
-                }}
-              >
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "calc(100dvh - 150px)",
+        minHeight: 480,
+        maxWidth: 840,
+        margin: "0 auto",
+        background: "var(--panel)",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "12px 18px",
+          borderBottom: "1px solid var(--line)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexShrink: 0,
+        }}
+      >
+        <a href="/ai-trading" className="btn ghost sm">
+          ← Settings
+        </a>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>AI Trading Agent</div>
+          <div className="muted" style={{ fontSize: 11 }}>
+            coordinator · data_agent · executer
+          </div>
+        </div>
+        <span className="tag d" style={{ marginLeft: "auto" }}>
+          context: {symbol}
+        </span>
+        {messages.length > 0 && (
+          <button type="button" className="btn ghost sm" onClick={() => setMessages([])} title="Clear this view (history stays on the server)">
+            Clear
+          </button>
+        )}
+      </div>
+
+      <div
+        ref={scrollRef}
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "20px 18px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        {messages.length === 0 && (
+          <div style={{ textAlign: "center", marginTop: 40 }}>
+            <p className="muted">Ask a question about the market, or tell the agent what to do.</p>
+            <div className="autoRow" style={{ justifyContent: "center", marginTop: 8 }}>
+              {SUGGESTIONS.map((s) => (
+                <button key={s} type="button" className="chip" onClick={() => setInput(s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((m) => {
+          const isUser = m.role === "user";
+          const isError = !isUser && isErrorMessage(m.content);
+          return (
+            <div key={m.id} style={{ display: "flex", gap: 10, flexDirection: isUser ? "row-reverse" : "row" }}>
+              <Avatar role={m.role} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: isUser ? "flex-end" : "flex-start", maxWidth: "78%" }}>
                 <div
+                  className="chat-bubble"
                   style={{
                     background: isUser ? "var(--accent)" : isError ? "color-mix(in srgb, var(--red) 16%, var(--panel))" : "var(--bg)",
                     border: isUser ? "none" : `1px solid ${isError ? "var(--red)" : "var(--line)"}`,
                     color: isUser ? "#fff" : "var(--text)",
-                    padding: "9px 13px",
-                    borderRadius: 10,
-                    borderBottomRightRadius: isUser ? 2 : 10,
-                    borderBottomLeftRadius: isUser ? 10 : 2,
-                    whiteSpace: "pre-wrap",
+                    padding: "10px 14px",
+                    borderRadius: 12,
+                    borderTopRightRadius: isUser ? 3 : 12,
+                    borderTopLeftRadius: isUser ? 12 : 3,
                     wordBreak: "break-word",
                   }}
                 >
@@ -151,38 +298,43 @@ export default function AiChatPage() {
                       trade
                     </span>
                   )}
-                  {m.content}
+                  {isUser ? m.content : <Markdown text={m.content} />}
                 </div>
-                <small className="muted" style={{ fontSize: 11 }}>
-                  {formatTime(m.ts)}
-                </small>
+                <div className="autoRow" style={{ margin: 0, gap: 8 }}>
+                  <small className="muted" style={{ fontSize: 11 }}>
+                    {formatTime(m.ts)}
+                  </small>
+                  {!isUser && <CopyButton text={m.content} />}
+                </div>
               </div>
-            );
-          })}
+            </div>
+          );
+        })}
 
-          {sending && (
+        {sending && (
+          <div style={{ display: "flex", gap: 10 }}>
+            <Avatar role="assistant" />
             <div
               style={{
-                alignSelf: "flex-start",
-                maxWidth: "90%",
+                maxWidth: "82%",
                 width: "100%",
                 background: "var(--bg)",
                 border: "1px solid var(--line)",
-                borderRadius: 10,
-                padding: "10px 13px",
+                borderRadius: 12,
+                borderTopLeftRadius: 3,
+                padding: "10px 14px",
                 fontSize: 13,
               }}
             >
               <div className="muted" style={{ marginBottom: 6, fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em" }}>
                 Live agent thinking
               </div>
-
               <div style={{ display: "grid", gap: 8 }}>
                 <ThinkingRow label="data_agent" active={!coordinatorText && !executerText}>
                   {dataAgentCalls.length > 0 ? dataAgentCalls.join(", ") : "gathering context…"}
                 </ThinkingRow>
                 <ThinkingRow label="coordinator" active={!!coordinatorText && !executerText}>
-                  {coordinatorText || "thinking…"}
+                  {coordinatorText ? <Markdown text={coordinatorText} /> : "thinking…"}
                 </ThinkingRow>
                 {(executerText || guardrailEvents.length > 0) && (
                   <ThinkingRow label="executer" active={!!executerText}>
@@ -196,23 +348,48 @@ export default function AiChatPage() {
                 )}
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+      </div>
 
-        <div style={{ borderTop: "1px solid var(--line)", padding: "12px 18px", display: "flex", gap: 8 }}>
-          <input
-            style={{ flex: 1 }}
+      <div style={{ borderTop: "1px solid var(--line)", padding: "12px 18px", flexShrink: 0 }}>
+        <div className="autoRow" style={{ margin: 0, alignItems: "flex-end", gap: 8 }}>
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            style={{
+              flex: 1,
+              resize: "none",
+              maxHeight: 160,
+              padding: "9px 12px",
+              lineHeight: 1.4,
+              fontFamily: "inherit",
+            }}
             value={input}
             disabled={sending}
             placeholder="Ask a question, or give a trade instruction..."
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
+            onChange={(e) => {
+              setInput(e.target.value);
+              autoGrow();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
           />
-          <button type="button" className="btn" disabled={sending || !input.trim()} onClick={send}>
-            {sending ? "Thinking…" : "Send"}
-          </button>
+          {sending ? (
+            <button type="button" className="btn ghost" onClick={stopGenerating}>
+              Stop
+            </button>
+          ) : (
+            <button type="button" className="btn" disabled={!input.trim()} onClick={send}>
+              Send
+            </button>
+          )}
         </div>
-      </section>
+      </div>
     </div>
   );
 }

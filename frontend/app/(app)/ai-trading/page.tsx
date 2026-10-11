@@ -94,6 +94,62 @@ export default function AiTradingPage() {
           Chat with the coordinator →
         </a>
         <p className="muted">{formatGuardrailSummary(settings)}</p>
+
+        <div
+          className="autoRow"
+          style={{
+            alignItems: "center",
+            gap: 14,
+            padding: "12px 14px",
+            borderRadius: 8,
+            border: `2px solid ${settings.paper_trading ? "var(--ok, #2e7d32)" : "var(--err, #c62828)"}`,
+            margin: "10px 0",
+          }}
+        >
+          <label className="switch" style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+            <span style={{ position: "relative", display: "inline-block", width: 46, height: 24 }}>
+              <input
+                type="checkbox"
+                checked={!settings.paper_trading}
+                onChange={(e) => {
+                  const goingLive = e.target.checked;
+                  if (goingLive && !confirm("Switch to LIVE trading? The AI will be able to place real orders on Delta with real money.")) {
+                    return;
+                  }
+                  save({ paper_trading: !goingLive });
+                }}
+                style={{ position: "absolute", opacity: 0, width: "100%", height: "100%", margin: 0, cursor: "pointer" }}
+              />
+              <span
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: 12,
+                  background: settings.paper_trading ? "var(--ok, #2e7d32)" : "var(--err, #c62828)",
+                  transition: "background 0.15s",
+                }}
+              />
+              <span
+                style={{
+                  position: "absolute",
+                  top: 3,
+                  left: settings.paper_trading ? 3 : 25,
+                  width: 18,
+                  height: 18,
+                  borderRadius: "50%",
+                  background: "#fff",
+                  transition: "left 0.15s",
+                }}
+              />
+            </span>
+            <strong>{settings.paper_trading ? "Paper Trading" : "LIVE Trading"}</strong>
+          </label>
+          <span className="muted">
+            {settings.paper_trading
+              ? "Simulated fills only. No real orders are sent to Delta."
+              : "Real orders will be placed on Delta with real funds."}
+          </span>
+        </div>
         {settings.paper_trading && paperSummary && (
           <p className="muted">Paper trading: {formatPaperPnlSummary(paperSummary)}</p>
         )}
@@ -102,14 +158,6 @@ export default function AiTradingPage() {
           <label style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <input type="checkbox" checked={settings.enabled} onChange={(e) => save({ enabled: e.target.checked })} />
             Enable AI trading
-          </label>
-          <label style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <input
-              type="checkbox"
-              checked={settings.paper_trading}
-              onChange={(e) => save({ paper_trading: e.target.checked })}
-            />
-            Paper trading (simulate, no real orders)
           </label>
           <label>
             Cooldown (minutes)

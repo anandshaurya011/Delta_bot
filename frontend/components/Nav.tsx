@@ -7,6 +7,7 @@ const LINKS = [
   { href: "/trade", label: "Trade" },
   { href: "/orders", label: "Orders" },
   { href: "/analysis", label: "Analysis" },
+  { href: "/ai-trading", label: "AI Trading" },
   { href: "/history", label: "History" },
   { href: "/settings", label: "Settings" },
 ];

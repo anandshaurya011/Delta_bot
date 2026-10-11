@@ -182,8 +182,8 @@ export default function AiTradingPage() {
           </button>
         </div>
 
-        <h3 style={{ marginTop: 20 }}>Guardrails</h3>
-        <div className="autoRow" style={{ flexDirection: "column", gap: 10 }}>
+        <h3 style={{ marginTop: 28, paddingTop: 16, borderTop: "1px solid var(--line)" }}>Guardrails</h3>
+        <div className="autoRow" style={{ flexDirection: "column", gap: 12 }}>
           <label style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <input
               type="checkbox"
@@ -248,7 +248,7 @@ export default function AiTradingPage() {
           {allowlistError && <p className="err">{allowlistError}</p>}
         </div>
 
-        <h3 style={{ marginTop: 20 }}>Agent instructions</h3>
+        <h3 style={{ marginTop: 28, paddingTop: 16, borderTop: "1px solid var(--line)" }}>Agent instructions</h3>
         {(["coordinator", "data", "executer"] as const).map((agent) => (
           <div key={agent} style={{ marginBottom: 14 }}>
             <label>
@@ -274,7 +274,7 @@ export default function AiTradingPage() {
           </div>
         ))}
 
-        <h3 style={{ marginTop: 20 }}>Decision log</h3>
+        <h3 style={{ marginTop: 28, paddingTop: 16, borderTop: "1px solid var(--line)" }}>Decision log</h3>
         <table>
           <thead>
             <tr>

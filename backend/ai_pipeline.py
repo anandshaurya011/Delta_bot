@@ -42,12 +42,19 @@ def call_llm(
     user_content: str,
     tools: list[dict[str, Any]] | None = None,
     on_chunk: Callable[[str], None] | None = None,
+    json_mode: bool = True,
 ) -> str:
+    # The OpenAI API rejects response_format={"type": "json_object"} with a 400 unless
+    # the word "json" appears somewhere in the messages -- every node in this pipeline
+    # asks for structured JSON and satisfies that by construction, but free-text chat
+    # replies (ai_chat.py's question-answering path) are plain prose, so json_mode=False
+    # lets those calls opt out instead of tripping that 400 on every chat question.
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
-        "response_format": {"type": "json_object"},
     }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
     if tools:
         kwargs["tools"] = tools
     if on_chunk is None:

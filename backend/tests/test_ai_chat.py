@@ -61,6 +61,21 @@ def test_handle_chat_message_question_path_never_calls_record_incoming_signal():
     # one user message, one assistant message
 
 
+def test_handle_chat_message_question_path_calls_llm_without_json_mode():
+    # Regression: OpenAI rejects response_format=json_object with a 400 unless the word
+    # "json" appears in the messages. The free-text chat answer prompt has no reason to
+    # mention "json" (it's plain prose), so this call must opt out of json_mode entirely
+    # rather than rely on the prompt text happening to satisfy the API's requirement.
+    with patch("ai_chat.store.add_chat_message"), \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: state), \
+         patch("ai_chat.resolve_chat_intent", return_value={"intent": "question"}), \
+         patch("ai_chat.ai_pipeline.call_llm", return_value="BTC is around $65,000 right now.") as mock_call:
+        ai_chat.handle_chat_message("user_1", "hi you there?", BASE_SETTINGS, lambda e: None)
+    _, kwargs = mock_call.call_args
+    assert kwargs["json_mode"] is False
+
+
 def test_handle_chat_message_trade_intent_rejected_when_ai_trading_disabled():
     disabled_settings = {**BASE_SETTINGS, "enabled": False}
     with patch("ai_chat.store.add_chat_message") as mock_add, \

@@ -452,8 +452,29 @@ def test_call_llm_with_on_chunk_streams_and_accumulates_full_text():
         )
     assert result == "hello"
     assert received == ["hel", "lo"]
+
+
+def test_call_llm_defaults_to_json_response_format():
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock(message=MagicMock(content="{}"))]
+    with patch("ai_pipeline._get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = fake_response
+        ai_pipeline.call_llm(model="gpt-4.1", system_prompt="sys", user_content="hi")
     _, kwargs = mock_get_client.return_value.chat.completions.create.call_args
-    assert kwargs["stream"] is True
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_call_llm_json_mode_false_omits_response_format():
+    # Regression: the OpenAI API 400s on response_format=json_object unless "json"
+    # appears in the messages. Free-text callers (chat Q&A) must be able to opt out.
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock(message=MagicMock(content="plain text reply"))]
+    with patch("ai_pipeline._get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = fake_response
+        result = ai_pipeline.call_llm(model="gpt-4.1", system_prompt="sys", user_content="hi", json_mode=False)
+    assert result == "plain text reply"
+    _, kwargs = mock_get_client.return_value.chat.completions.create.call_args
+    assert "response_format" not in kwargs
 
 
 def test_coordinator_node_with_on_event_emits_token_events():

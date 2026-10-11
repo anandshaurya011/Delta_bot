@@ -73,6 +73,7 @@ def handle_chat_message(user_id: str, message: str, settings: dict[str, Any], on
                 system_prompt=_CHAT_ANSWER_PROMPT,
                 user_content=json.dumps({"message": message, "gathered_data": state["gathered_data"]}),
                 on_chunk=on_chunk,
+                json_mode=False,
             )
             store.add_chat_message(user_id, "assistant", reply)
             return

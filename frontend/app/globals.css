@@ -64,6 +64,8 @@ table.term td.tfc label { display:inline-flex; flex-direction:row; align-items:c
 .dots { display:inline-flex; gap:5px; align-items:center; }
 .dot { width:10px; height:10px; border-radius:50%; border:1px solid var(--dim); background:none; padding:0; cursor:pointer; }
 .dot.on { background:var(--accent); border-color:var(--accent); }
+@keyframes pulse { 0%, 100% { opacity:1; } 50% { opacity:.3; } }
+.thinking-dot { animation: pulse 1s infinite; }
 table tbody tr { transition:background .12s; }
 table tbody tr:hover { background:color-mix(in srgb, var(--accent) 14%, transparent); }
 table tbody tr:hover td { border-bottom-color:var(--accent); }

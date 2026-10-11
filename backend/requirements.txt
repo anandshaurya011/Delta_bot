@@ -5,3 +5,5 @@ pyjwt[crypto]
 cryptography
 httpx
 pytest
+langgraph
+openai

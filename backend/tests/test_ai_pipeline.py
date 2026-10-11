@@ -72,3 +72,61 @@ def test_data_agent_node_with_no_tool_calls_leaves_gathered_data_empty():
     with patch("ai_pipeline.call_llm", return_value=json.dumps({"tool_calls": []})):
         state = ai_pipeline.data_agent_node(_state())
     assert state["gathered_data"] == {}
+
+
+def test_wait_for_fill_returns_filled_when_unfilled_size_zero():
+    with patch("ai_pipeline.delta.get_order_by_id", return_value={"id": 1, "state": "closed", "unfilled_size": 0}):
+        result = ai_pipeline.wait_for_fill(1, timeout_s=1, interval_s=0.01)
+    assert result["outcome"] == "filled"
+
+
+def test_wait_for_fill_returns_exchange_rejected():
+    with patch("ai_pipeline.delta.get_order_by_id", return_value={"id": 1, "state": "cancelled", "unfilled_size": 5}):
+        result = ai_pipeline.wait_for_fill(1, timeout_s=1, interval_s=0.01)
+    assert result["outcome"] == "exchange_rejected"
+
+
+def test_wait_for_fill_times_out_when_still_open():
+    with patch("ai_pipeline.delta.get_order_by_id", return_value={"id": 1, "state": "open", "unfilled_size": 5}):
+        result = ai_pipeline.wait_for_fill(1, timeout_s=0.05, interval_s=0.01)
+    assert result["outcome"] == "unfilled_timeout"
+
+
+def test_executer_node_holds_without_calling_llm_or_placing_order():
+    state = _state(plan={"action": "hold", "side": "none", "size_hint": None, "reasoning": "nothing to do"})
+    with patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "no_action"}
+
+
+def test_executer_node_rejects_via_guardrail_without_placing_order():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 100, "reasoning": "go long"})
+    state["settings"]["guardrails_json"] = {"max_position_size": {"enabled": True, "value": 10}}
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 100})
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "guardrail:max_position_size"}
+
+
+def test_executer_node_places_order_and_confirms_fill():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 5})
+    placed_order = {"id": 42}
+    filled_order = {"id": 42, "state": "closed", "unfilled_size": 0}
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count") as mock_inc, \
+         patch("ai_pipeline.delta.place_order", return_value=placed_order), \
+         patch("ai_pipeline.delta.get_order_by_id", return_value=filled_order):
+        state = ai_pipeline.executer_node(state)
+    assert state["execution_result"]["executed"] is True
+    assert state["execution_result"]["fill_status"] == "filled"
+    mock_inc.assert_called_once()

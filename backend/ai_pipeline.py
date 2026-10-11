@@ -113,3 +113,69 @@ def data_agent_node(state: PipelineState) -> PipelineState:
             gathered[call["name"]] = impl(call.get("args", {}))
     state["gathered_data"] = gathered
     return state
+
+
+import time as _time
+
+from ai_guardrails import evaluate_guardrails
+
+_EXECUTER_BASE_PROMPT = (
+    "You are the executer agent. Given the coordinator's plan, produce the concrete order "
+    "request. You do not decide whether the trade is allowed — that is checked separately. "
+    'Respond ONLY with JSON: {"symbol": "...", "side": "buy"|"sell", "size": integer}'
+)
+
+
+def wait_for_fill(order_id: int, timeout_s: float = 10.0, interval_s: float = 1.0) -> dict[str, Any]:
+    deadline = _time.time() + timeout_s
+    while True:
+        order = delta.get_order_by_id(order_id)
+        unfilled = order.get("unfilled_size", 0)
+        state = order.get("state")
+        if unfilled == 0:
+            return {"outcome": "filled", "order": order}
+        if state == "closed":
+            return {"outcome": "partially_filled", "order": order}
+        if state in ("cancelled", "rejected"):
+            return {"outcome": "exchange_rejected", "order": order}
+        if _time.time() >= deadline:
+            return {"outcome": "unfilled_timeout", "order": order}
+        _time.sleep(interval_s)
+
+
+def executer_node(state: PipelineState) -> PipelineState:
+    plan = state["plan"] or {}
+    if plan.get("action") in (None, "hold") or plan.get("side") == "none":
+        state["execution_result"] = {"executed": False, "reason": "no_action"}
+        return state
+
+    settings = state["settings"]
+    system_prompt = _EXECUTER_BASE_PROMPT
+    if settings.get("executer_prompt"):
+        system_prompt += "\n\nUser instructions: " + settings["executer_prompt"]
+    user_content = json.dumps({"plan": plan, "signal": state["signal"]})
+    raw = call_llm(model=settings["executer_model"], system_prompt=system_prompt, user_content=user_content)
+    order_request = json.loads(raw)
+    state["order_request"] = order_request
+
+    symbol = order_request["symbol"]
+    position = delta.get_position(symbol)
+    existing_size = position["size"] if position else 0
+    context = {
+        "existing_position_size": existing_size,
+        "trades_today": store.get_trade_count_today(state["user_id"]),
+        "daily_pnl": delta.get_total_unrealized_pnl(),
+    }
+    guardrail_result = evaluate_guardrails(order_request, settings.get("guardrails_json", {}), context)
+    if not guardrail_result.allowed:
+        state["execution_result"] = {"executed": False, "reason": guardrail_result.reason}
+        return state
+
+    order = delta.place_order(symbol, order_request["side"], order_request["size"])
+    fill = wait_for_fill(order["id"])
+    if fill["outcome"] in ("filled", "partially_filled"):
+        store.increment_trade_count(state["user_id"])
+        state["execution_result"] = {"executed": True, "order": fill["order"], "fill_status": fill["outcome"]}
+    else:
+        state["execution_result"] = {"executed": False, "reason": fill["outcome"], "order": fill["order"]}
+    return state

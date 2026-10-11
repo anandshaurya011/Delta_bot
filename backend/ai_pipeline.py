@@ -84,10 +84,21 @@ _TOOL_IMPL = {
 def bind_user_credentials(user_id: str) -> None:
     """Looks up stored Delta credentials for user_id and binds them into delta_api's
     per-call context. Must be called once at the start of run_pipeline since background
-    tasks run outside the request's contextvar scope."""
+    tasks run outside the request's contextvar scope.
+
+    Always calls delta.use_credentials, even when no credentials are stored, exactly
+    like auth.bind_user does for normal authed requests. delta_api._active() falls back
+    to the operator's own global Delta API key ONLY when no per-call credentials were
+    ever bound at all -- a conditional call here (skipping use_credentials when creds is
+    None) would silently let this background pipeline trade on the operator's own Delta
+    account on behalf of a user who never configured their own keys.
+    """
     creds = store.get_credentials(user_id)
-    if creds:
-        delta.use_credentials(creds.api_key, creds.api_secret, creds.env)
+    delta.use_credentials(
+        creds.api_key if creds else None,
+        creds.api_secret if creds else None,
+        creds.env if creds else "india_prod",
+    )
 
 
 _DATA_AGENT_BASE_PROMPT = (
@@ -181,6 +192,18 @@ def executer_node(state: PipelineState) -> PipelineState:
     if symbol != state["signal"]["symbol"]:
         state["execution_result"] = {"executed": False, "reason": "invalid_order_request"}
         return state
+    # The executer's LLM is supposed to translate the coordinator's size_hint into a
+    # concrete order size, not invent an unrelated number -- reject anything wildly out
+    # of proportion (seen in testing: size_hint 0.5 turned into size 50, a 100x jump).
+    # A generous 10x band in either direction allows for real unit differences (e.g.
+    # size_hint expressed as a risk fraction vs. size in whole contracts) while still
+    # catching a genuinely disconnected value.
+    size_hint = plan.get("size_hint")
+    if isinstance(size_hint, (int, float)) and not isinstance(size_hint, bool) and size_hint > 0:
+        ratio = size / size_hint
+        if ratio > 10 or ratio < 0.1:
+            state["execution_result"] = {"executed": False, "reason": "invalid_order_request"}
+            return state
 
     state["order_request"] = order_request
     position = delta.get_position(symbol)

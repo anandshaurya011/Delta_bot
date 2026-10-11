@@ -59,6 +59,18 @@ def test_bind_user_credentials_uses_stored_creds():
     mock_use.assert_called_once_with("k", "s", "india_testnet")
 
 
+def test_bind_user_credentials_fails_closed_when_user_has_no_stored_creds():
+    # Regression: delta_api._active() falls back to the operator's own global Delta
+    # API key only when use_credentials was never called at all in this context. If
+    # bind_user_credentials no-ops for a user with no stored creds, this background
+    # pipeline would silently trade on the operator's account instead of failing.
+    with patch("ai_pipeline.store.get_credentials", return_value=None) as mock_get, \
+         patch("ai_pipeline.delta.use_credentials") as mock_use:
+        ai_pipeline.bind_user_credentials("user_1")
+    mock_get.assert_called_once_with("user_1")
+    mock_use.assert_called_once_with(None, None, "india_prod")
+
+
 def test_data_agent_node_runs_requested_tool_calls_and_fills_gathered_data():
     tool_call_response = json.dumps({"tool_calls": [{"name": "get_position", "args": {"symbol": "BTCUSD"}}]})
     with patch("ai_pipeline.call_llm", return_value=tool_call_response), \
@@ -144,6 +156,51 @@ def test_executer_node_places_order_and_confirms_fill():
     assert state["execution_result"]["executed"] is True
     assert state["execution_result"]["fill_status"] == "filled"
     mock_inc.assert_called_once()
+
+
+def test_executer_node_rejects_order_wildly_out_of_proportion_to_size_hint():
+    # Regression: seen in manual testing, size_hint 0.5 turned into order size 50 (100x).
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 0.5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 50})
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_place.assert_not_called()
+    assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_executer_node_allows_order_within_proportion_band_of_size_hint():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 8})
+    placed_order = {"id": 43}
+    filled_order = {"id": 43, "state": "closed", "unfilled_size": 0}
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count"), \
+         patch("ai_pipeline.delta.place_order", return_value=placed_order), \
+         patch("ai_pipeline.delta.get_order_by_id", return_value=filled_order):
+        state = ai_pipeline.executer_node(state)
+    assert state["execution_result"]["executed"] is True
+
+
+def test_executer_node_allows_order_when_size_hint_is_none():
+    # size_hint can legitimately be null (e.g. coordinator leaves sizing to the executer) --
+    # the proportion check must not reject every order in that case.
+    state = _state(plan={"action": "open", "side": "long", "size_hint": None, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 50})
+    placed_order = {"id": 44}
+    filled_order = {"id": 44, "state": "closed", "unfilled_size": 0}
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count"), \
+         patch("ai_pipeline.delta.place_order", return_value=placed_order), \
+         patch("ai_pipeline.delta.get_order_by_id", return_value=filled_order):
+        state = ai_pipeline.executer_node(state)
+    assert state["execution_result"]["executed"] is True
 
 
 def test_executer_node_handles_malformed_json_from_llm():

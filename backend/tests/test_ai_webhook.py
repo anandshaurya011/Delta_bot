@@ -83,6 +83,32 @@ def test_webhook_duplicate_payload_is_skipped(client):
     assert signals[0]["status"] == "duplicate_skipped"
 
 
+def test_webhook_works_with_no_auth_override_and_no_authorization_header(client):
+    # Regression test: the webhook is mounted on a sub-app with no Clerk dependency,
+    # so it must work even when nothing has overridden auth.bind_user. TradingView
+    # can never send a Clerk session token, so this has to pass with zero auth headers.
+    client.put("/ai/settings", json={"enabled": True})
+    token = client.get("/ai/settings").json()["webhook_token"]
+    import main as main_module
+
+    main_module.app.dependency_overrides.clear()
+    try:
+        with patch("main.ai_pipeline.run_pipeline"):
+            resp = client.post(
+                f"/webhook/tv/{token}",
+                json={"symbol": "BTCUSD", "timeframe": "15m", "action": "buy"},
+                headers={},
+            )
+    finally:
+        async def _fake_bind_user():
+            main_module.auth.user_id_var.set("user_1")
+            return "user_1"
+
+        main_module.app.dependency_overrides[main_module.auth.bind_user] = _fake_bind_user
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "processing"
+
+
 def test_webhook_missing_fields_is_422(client):
     client.put("/ai/settings", json={"enabled": True})
     token = client.get("/ai/settings").json()["webhook_token"]

@@ -33,6 +33,12 @@ app = FastAPI(
     dependencies=[Depends(auth.bind_user)],
 )
 
+# TradingView calls this directly over the internet and cannot send a Clerk session
+# token, so its one route is mounted on a separate sub-app with none of the parent
+# app's global Clerk dependency. External URL stays /webhook/tv/{token} either way.
+webhook_app = FastAPI(title="TradingView webhook (token-authed, not Clerk-authed)")
+app.mount("/webhook", webhook_app)
+
 
 @app.exception_handler(delta.DeltaAPIError)
 async def _delta_error(_: Request, exc: delta.DeltaAPIError):
@@ -477,7 +483,7 @@ def _run_signal_pipeline(signal_id: int, user_id: str, signal: dict[str, Any]) -
         store.update_signal_result(signal_id, "error", {"error": str(exc)})
 
 
-@app.post("/webhook/tv/{token}", tags=["ai"])
+@webhook_app.post("/tv/{token}", tags=["ai"])
 def tradingview_webhook(token: str, body: WebhookSignalIn, background_tasks: BackgroundTasks):
     user_id = store.get_user_id_by_webhook_token(token)
     if not user_id:

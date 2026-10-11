@@ -15,12 +15,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv(Path(__file__).resolve().parent / ".env")
+import ai_pipeline  # noqa: E402
 import auth  # noqa: E402
 import delta_api as delta  # noqa: E402
 import store  # noqa: E402
@@ -416,3 +417,76 @@ def put_delta_settings(body: DeltaCredsIn):
 def delete_delta_settings():
     store.delete_credentials(auth.user_id_var.get())
     return {"is_set": False}
+
+
+# --------------------------------------------------------------------------
+# AI settings, signals, and TradingView webhook
+# --------------------------------------------------------------------------
+
+class AiSettingsIn(BaseModel):
+    enabled: bool | None = None
+    cooldown_minutes: int | None = None
+    coordinator_model: str | None = None
+    data_model: str | None = None
+    executer_model: str | None = None
+    coordinator_prompt: str | None = None
+    data_prompt: str | None = None
+    executer_prompt: str | None = None
+    guardrails_json: dict[str, Any] | None = None
+
+
+class WebhookSignalIn(BaseModel):
+    symbol: str
+    timeframe: str
+    action: str
+    note: str | None = None
+
+
+@app.get("/ai/settings", tags=["ai"])
+def get_ai_settings():
+    return store.get_or_create_ai_settings(auth.user_id_var.get())
+
+
+@app.put("/ai/settings", tags=["ai"])
+def put_ai_settings(body: AiSettingsIn):
+    user_id = auth.user_id_var.get()
+    store.get_or_create_ai_settings(user_id)
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    return store.update_ai_settings(user_id, **fields)
+
+
+@app.post("/ai/webhook/regenerate", tags=["ai"])
+def regenerate_ai_webhook():
+    token = store.regenerate_webhook_token(auth.user_id_var.get())
+    return {"webhook_token": token}
+
+
+@app.get("/ai/signals", tags=["ai"])
+def get_ai_signals(limit: int = Query(50, ge=1, le=500)):
+    return store.list_signals(auth.user_id_var.get(), limit)
+
+
+def _run_signal_pipeline(signal_id: int, user_id: str, signal: dict[str, Any]) -> None:
+    settings = store.get_or_create_ai_settings(user_id)
+    try:
+        result = ai_pipeline.run_pipeline(user_id, signal, settings)
+        store.update_signal_result(signal_id, "done", result)
+        if result["execution_result"].get("reason") == "guardrail:max_daily_loss":
+            store.update_ai_settings(user_id, enabled=False)
+    except Exception as exc:  # pragma: no cover - defensive, exercised via mocked failure in review
+        store.update_signal_result(signal_id, "error", {"error": str(exc)})
+
+
+@app.post("/webhook/tv/{token}", tags=["ai"])
+def tradingview_webhook(token: str, body: WebhookSignalIn, background_tasks: BackgroundTasks):
+    user_id = store.get_user_id_by_webhook_token(token)
+    if not user_id:
+        raise HTTPException(404, "Unknown or disabled webhook")
+    settings = store.get_or_create_ai_settings(user_id)
+    outcome = store.record_incoming_signal(
+        user_id, body.symbol, body.timeframe, body.action, body.note, settings["cooldown_minutes"]
+    )
+    if outcome["status"] == "processing":
+        signal = {"symbol": body.symbol, "timeframe": body.timeframe, "action": body.action, "note": body.note}
+        background_tasks.add_task(_run_signal_pipeline, outcome["id"], user_id, signal)
+    return {"status": outcome["status"]}

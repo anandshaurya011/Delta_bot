@@ -47,6 +47,26 @@ def test_resolve_chat_intent_trade_missing_fields_falls_back_to_question():
     assert result == {"intent": "question"}
 
 
+def test_handle_chat_message_passes_symbol_into_data_agent_signal():
+    # Regression: chat questions like "get the data and tell me should I buy" never name
+    # a symbol themselves -- without the frontend's currently-viewed symbol threaded in,
+    # the data_agent has nothing to look up and (correctly but unhelpfully) says so.
+    captured = {}
+
+    def fake_data_agent(state, on_event=None):
+        captured["signal"] = dict(state["signal"])
+        return state
+
+    with patch("ai_chat.store.add_chat_message"), \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=fake_data_agent), \
+         patch("ai_chat.resolve_chat_intent", return_value={"intent": "question"}), \
+         patch("ai_chat.ai_pipeline.call_llm", return_value="BTC is around $65,000 right now."):
+        ai_chat.handle_chat_message("user_1", "get the data and analyse", BASE_SETTINGS, lambda e: None, symbol="BTCUSD")
+    assert captured["signal"]["symbol"] == "BTCUSD"
+    assert captured["signal"]["note"] == "get the data and analyse"
+
+
 def test_handle_chat_message_question_path_never_calls_record_incoming_signal():
     with patch("ai_chat.store.add_chat_message") as mock_add, \
          patch("ai_chat.ai_pipeline.bind_user_credentials"), \

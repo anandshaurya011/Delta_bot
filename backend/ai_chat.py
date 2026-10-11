@@ -41,14 +41,24 @@ def resolve_chat_intent(message: str, settings: dict[str, Any]) -> dict[str, Any
     return {"intent": "trade", **{k: parsed[k] for k in _REQUIRED_TRADE_KEYS}}
 
 
-def handle_chat_message(user_id: str, message: str, settings: dict[str, Any], on_event: Callable[[dict[str, Any]], None]) -> None:
+def handle_chat_message(
+    user_id: str,
+    message: str,
+    settings: dict[str, Any],
+    on_event: Callable[[dict[str, Any]], None],
+    symbol: str | None = None,
+) -> None:
     try:
         store.add_chat_message(user_id, "user", message)
         ai_pipeline.bind_user_credentials(user_id)
 
+        # symbol is the symbol currently shown in the app's header (frontend's global
+        # symbol picker) -- the data_agent otherwise has no way to know what "get the
+        # data" refers to when the chat message itself never names a coin, and it would
+        # correctly (but unhelpfully) report having nothing to look up.
         state: ai_pipeline.PipelineState = {
             "user_id": user_id,
-            "signal": {"symbol": "", "timeframe": "", "action": "", "note": message},
+            "signal": {"symbol": symbol or "", "timeframe": "", "action": "", "note": message},
             "settings": settings,
             "gathered_data": {},
             "plan": None,

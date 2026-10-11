@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useToast } from "@/components/Toast";
+import { useSymbol } from "@/lib/symbol";
 import { type ChatMessage, type ThinkingEvent, parseSseLine, groupEventsByNode, formatTokenStream } from "@/lib/aiChat";
 
 function isErrorMessage(content: string): boolean {
@@ -14,6 +15,7 @@ function formatTime(ts: number): string {
 
 export default function AiChatPage() {
   const toast = useToast();
+  const [symbol] = useSymbol();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -50,7 +52,7 @@ export default function AiChatPage() {
       { id: -Date.now(), ts: Math.floor(Date.now() / 1000), role: "user", content: message, signal_id: null },
     ]);
     try {
-      await api("POST", "/ai/chat", { message });
+      await api("POST", "/ai/chat", { message, symbol });
     } catch (e) {
       toast(e instanceof ApiError ? e.message : "Failed to send", "err");
       setSending(false);
@@ -94,6 +96,9 @@ export default function AiChatPage() {
             ← AI Trading
           </a>
           <h2 style={{ margin: 0 }}>Chat with the coordinator</h2>
+          <span className="tag d" style={{ marginLeft: "auto" }}>
+            context: {symbol}
+          </span>
         </div>
 
         <div

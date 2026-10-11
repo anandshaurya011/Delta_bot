@@ -132,7 +132,12 @@ def bind_user_credentials(user_id: str) -> None:
 _DATA_AGENT_BASE_PROMPT = (
     "You are the data_agent for an automated trading system. Given a signal and the "
     "available tools, decide which tools to call to gather the context the coordinator "
-    f"needs. Available tools: {json.dumps(DATA_TOOLS)}. Respond ONLY with JSON: "
+    "needs. The signal's \"symbol\" field, when present, is the symbol currently being "
+    "viewed in the app and should be used as the subject of any tool calls unless the "
+    "signal's \"note\" field (the user's own chat message, when this came from chat "
+    "rather than a webhook) names a different symbol explicitly. If no symbol is known "
+    "from either field, request no tool calls rather than guessing one. "
+    f"Available tools: {json.dumps(DATA_TOOLS)}. Respond ONLY with JSON: "
     '{"tool_calls": [{"name": "...", "args": {...}}, ...]}'
 )
 

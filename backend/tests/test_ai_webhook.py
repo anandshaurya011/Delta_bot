@@ -127,6 +127,20 @@ def test_post_ai_chat_question_does_not_require_ai_trading_enabled(client):
     assert args[1] == "what's the price of BTC?"
 
 
+def test_post_ai_chat_passes_symbol_through_to_handle_chat_message(client):
+    with patch("main.ai_chat.handle_chat_message") as mock_handle:
+        resp = client.post("/ai/chat", json={"message": "get the data", "symbol": "ETHUSD"})
+    assert resp.status_code == 200
+    assert mock_handle.call_args.kwargs["symbol"] == "ETHUSD"
+
+
+def test_post_ai_chat_symbol_is_optional(client):
+    with patch("main.ai_chat.handle_chat_message") as mock_handle:
+        resp = client.post("/ai/chat", json={"message": "what's the price of BTC?"})
+    assert resp.status_code == 200
+    assert mock_handle.call_args.kwargs["symbol"] is None
+
+
 def test_post_ai_chat_empty_message_is_422(client):
     resp = client.post("/ai/chat", json={"message": ""})
     assert resp.status_code == 422

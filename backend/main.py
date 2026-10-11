@@ -531,9 +531,10 @@ def tradingview_webhook(token: str, body: WebhookSignalIn, background_tasks: Bac
 
 class ChatMessageIn(BaseModel):
     message: str = Field(min_length=1)
+    symbol: str | None = None
 
 
-def _run_chat_message(user_id: str, message: str, settings: dict[str, Any]) -> None:
+def _run_chat_message(user_id: str, message: str, settings: dict[str, Any], symbol: str | None = None) -> None:
     def on_event(event: dict[str, Any]) -> None:
         # Hardening (Task 4 review carryover): on_event runs INSIDE handle_chat_message's
         # trade-path try/except. ai_chat_stream.publish() can raise queue.Full under rare
@@ -545,14 +546,14 @@ def _run_chat_message(user_id: str, message: str, settings: dict[str, Any]) -> N
         except Exception:
             pass
 
-    ai_chat.handle_chat_message(user_id, message, settings, on_event=on_event)
+    ai_chat.handle_chat_message(user_id, message, settings, on_event=on_event, symbol=symbol)
 
 
 @app.post("/ai/chat", tags=["ai"])
 def post_ai_chat(body: ChatMessageIn, background_tasks: BackgroundTasks):
     user_id = auth.user_id_var.get()
     settings = store.get_or_create_ai_settings(user_id)
-    background_tasks.add_task(_run_chat_message, user_id, body.message, settings)
+    background_tasks.add_task(_run_chat_message, user_id, body.message, settings, body.symbol)
     return {"status": "processing"}
 
 

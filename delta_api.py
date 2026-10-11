@@ -53,6 +53,7 @@ for any command's exact options:
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 import hmac
 import json
@@ -102,7 +103,31 @@ API_SECRET = _CONFIG.get("DELTA_API_SECRET")
 ENV = _CONFIG.get("DELTA_MCP_ENV", "india_prod")
 BASE_URL = BASE_URLS.get(ENV, BASE_URLS["india_prod"])
 
-_PRODUCT_CACHE: dict[str, dict[str, Any]] = {}
+_PRODUCT_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+
+# Per-request credentials (set by the web backend). None = not in a web request -> module globals (CLI).
+_CREDS: contextvars.ContextVar[tuple[str | None, str | None, str] | None] = contextvars.ContextVar("delta_creds", default=None)
+
+
+class CredentialsMissing(RuntimeError):
+    """A signed call was attempted but no Delta credentials are available for this request."""
+
+
+def use_credentials(api_key: str | None, api_secret: str | None, env: str) -> contextvars.Token:
+    """Bind credentials to the current context. Empty keys mean 'none' -- the process globals are NOT consulted."""
+    return _CREDS.set((api_key or None, api_secret or None, env))
+
+
+def _active() -> tuple[str | None, str | None, str]:
+    c = _CREDS.get()
+    if c is not None:
+        return c[0], c[1], BASE_URLS.get(c[2], BASE_URLS["india_prod"])
+    return API_KEY, API_SECRET, BASE_URL
+
+
+def active_env() -> str:
+    c = _CREDS.get()
+    return c[2] if c is not None else ENV
 
 
 class DeltaAPIError(RuntimeError):
@@ -118,9 +143,9 @@ class DeltaAPIError(RuntimeError):
 # Core signed request plumbing
 # --------------------------------------------------------------------------
 
-def _sign(method: str, timestamp: str, path: str, query_string: str, body: str) -> str:
+def _sign(method: str, timestamp: str, path: str, query_string: str, body: str, secret: str | None = None) -> str:
     message = method + timestamp + path + query_string + body
-    return hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return hmac.new((secret if secret is not None else API_SECRET).encode(), message.encode(), hashlib.sha256).hexdigest()
 
 
 def _request(
@@ -133,7 +158,8 @@ def _request(
     query = {k: v for k, v in (query or {}).items() if v is not None}
     query_string = ("?" + urllib.parse.urlencode(query)) if query else ""
     payload = json.dumps(body) if body is not None else ""
-    url = BASE_URL + path + query_string
+    api_key, api_secret, base_url = _active()
+    url = base_url + path + query_string
 
     headers = {
         "Content-Type": "application/json",
@@ -141,15 +167,15 @@ def _request(
         "User-Agent": "delta-api-python-client",
     }
     if auth:
-        if not API_KEY or not API_SECRET:
-            raise RuntimeError(
+        if not api_key or not api_secret:
+            raise CredentialsMissing(
                 "DELTA_API_KEY / DELTA_API_SECRET not set. Run "
                 "`uvx delta-exchange-mcp login`, or export the env vars, or fix .env."
             )
         timestamp = str(int(time.time()))
-        headers["api-key"] = API_KEY
+        headers["api-key"] = api_key
         headers["timestamp"] = timestamp
-        headers["signature"] = _sign(method, timestamp, path, query_string, payload)
+        headers["signature"] = _sign(method, timestamp, path, query_string, payload, api_secret)
 
     data = payload.encode() if payload else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -187,9 +213,10 @@ def get_product(symbol: str) -> dict:
 
 def get_product_id(symbol: str) -> int:
     symbol = symbol.upper()
-    if symbol not in _PRODUCT_CACHE:
-        _PRODUCT_CACHE[symbol] = get_product(symbol)
-    return _PRODUCT_CACHE[symbol]["id"]
+    key = (_active()[2], symbol)
+    if key not in _PRODUCT_CACHE:
+        _PRODUCT_CACHE[key] = get_product(symbol)
+    return _PRODUCT_CACHE[key]["id"]
 
 
 def get_ticker(symbol: str) -> dict:

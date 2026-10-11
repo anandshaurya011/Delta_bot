@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { num, signClass } from "@/lib/format";
@@ -660,8 +660,8 @@ function ActionsView({
               const key = keyOf(e);
               const isOpen = open.has(key);
               return (
-                <>
-                  <tr key={key} style={{ cursor: "pointer" }} onClick={() => toggle(key)}>
+                <Fragment key={key}>
+                  <tr style={{ cursor: "pointer" }} onClick={() => toggle(key)}>
                     <td style={{ width: 24, textAlign: "center" }}>{isOpen ? "▾" : "▸"}</td>
                     <td title={new Date(e.ts * 1000).toLocaleString()} style={{ textAlign: "left" }}>
                       {new Date(e.ts * 1000).toLocaleTimeString() + " · " + ago(e.ts)}
@@ -689,7 +689,7 @@ function ActionsView({
                     </td>
                   </tr>
                   {isOpen && (
-                    <tr key={key + "-detail"}>
+                    <tr>
                       <td colSpan={6} style={{ textAlign: "left", whiteSpace: "normal" }}>
                         <div className="row" style={{ alignItems: "start" }}>
                           <div style={{ flex: 1, minWidth: 260 }}>
@@ -715,7 +715,7 @@ function ActionsView({
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </tbody>

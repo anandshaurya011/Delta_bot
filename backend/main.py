@@ -1,82 +1,46 @@
 """
 FastAPI backend for delta_api.py (Delta Exchange India).
 
-Every endpoint requires the header  X-API-Key: <key>.  The key is a random
-secret: set BACKEND_API_KEY in the environment or in backend/.env; if neither
-exists, one is generated on first start, saved to backend/.env (chmod 600) and
-printed to the console.
-
-Run:
-    cd /home/anand-shaurya/Documents/personal/delta/backend
-    .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
-
-Interactive docs: http://127.0.0.1:8000/docs  -> click "Authorize", paste the key.
-NOTE: order endpoints place REAL orders on the account configured in delta_api.
+Every endpoint requires  Authorization: Bearer <Clerk session token>  (the Next.js frontend attaches it).
+Set CLERK_PUBLISHABLE_KEY in backend/.env. Each user's Delta keys are saved via PUT /settings/delta.
+Run:  .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+NOTE: order endpoints place REAL orders on the calling user's Delta account.
 """
 
 from __future__ import annotations
 
 import functools
-import os
-import secrets
 import sys
 from pathlib import Path
 from typing import Any, Literal
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.security import APIKeyHeader
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import db  # noqa: E402
+load_dotenv(Path(__file__).resolve().parent / ".env")
+import auth  # noqa: E402
 import delta_api as delta  # noqa: E402
-
-# --------------------------------------------------------------------------
-# Auth
-# --------------------------------------------------------------------------
-
-_ENV_PATH = Path(__file__).resolve().parent / ".env"
-
-
-def _load_backend_key() -> str:
-    key = os.environ.get("BACKEND_API_KEY", "").strip()
-    if key:
-        return key
-    if _ENV_PATH.is_file():
-        for line in _ENV_PATH.read_text().splitlines():
-            name, _, value = line.partition("=")
-            if name.strip() == "BACKEND_API_KEY" and value.strip():
-                return value.strip().strip('"').strip("'")
-    key = secrets.token_urlsafe(32)
-    fd = os.open(_ENV_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "a") as f:
-        f.write(f"BACKEND_API_KEY={key}\n")
-    print(f"\n*** Generated new API key (saved to {_ENV_PATH}):\n    {key}\n", flush=True)
-    return key
-
-
-BACKEND_API_KEY = _load_backend_key()
-_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False, description="Backend API key")
-
-
-def require_api_key(key: str | None = Depends(_api_key_header)) -> None:
-    if not key or not secrets.compare_digest(key.encode(), BACKEND_API_KEY.encode()):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key", headers={"WWW-Authenticate": "ApiKey"})
-
+import store  # noqa: E402
 
 app = FastAPI(
     title="Delta Exchange India Backend",
-    description="REST wrapper over delta_api.py. Authenticate with the `X-API-Key` header (use **Authorize** above).",
-    version="1.0.0",
-    dependencies=[Depends(require_api_key)],
+    description="REST wrapper over delta_api.py. Authenticate with a Clerk session token (`Authorization: Bearer ...`).",
+    version="2.0.0",
+    dependencies=[Depends(auth.bind_user)],
 )
 
 
 @app.exception_handler(delta.DeltaAPIError)
 async def _delta_error(_: Request, exc: delta.DeltaAPIError):
     return JSONResponse(status_code=502, content={"detail": "Delta API error", "delta_status": exc.status, "delta_error": exc.payload})
+
+
+@app.exception_handler(delta.CredentialsMissing)
+async def _creds_missing(_: Request, exc: delta.CredentialsMissing):
+    return JSONResponse(status_code=412, content={"detail": "delta_credentials_missing"})
 
 
 @app.exception_handler(ValueError)
@@ -99,9 +63,9 @@ def audited(action: str):
             try:
                 result = fn(*args, **kwargs)
             except Exception as exc:
-                db.log_event(action, req, False, str(getattr(exc, "payload", exc)))
+                store.log_event(auth.user_id_var.get() or "unknown", action, req, False, str(getattr(exc, "payload", exc)))
                 raise
-            db.log_event(action, req, True, result)
+            store.log_event(auth.user_id_var.get() or "unknown", action, req, True, result)
             return result
 
         return inner
@@ -154,20 +118,15 @@ class LeverageIn(BaseModel):
 # Meta / market data
 # --------------------------------------------------------------------------
 
-@app.get("/auth/check", tags=["meta"], summary="Validate the API key (no Delta call)")
+@app.get("/auth/check", tags=["meta"], summary="Validate the session token (no Delta call)")
 def auth_check() -> dict[str, bool]:
     return {"ok": True}
 
 
 @app.get("/status", tags=["meta"], summary="Environment, credentials and account sanity check")
 def status() -> dict[str, Any]:
-    return {
-        "env": delta.ENV,
-        "base_url": delta.BASE_URL,
-        "delta_credentials_set": bool(delta.API_KEY and delta.API_SECRET),
-        "balances": delta.get_balances(),
-        "open_orders": delta.get_open_orders(),
-    }
+    return {"env": delta.active_env(), "delta_credentials_set": store.get_credentials(auth.user_id_var.get()) is not None,
+            "balances": delta.get_balances(), "open_orders": delta.get_open_orders()}
 
 
 @app.get("/products", tags=["market"], summary="List products")
@@ -312,9 +271,9 @@ def set_leverage(symbol: str, body: LeverageIn):
 # Orders (REAL orders)
 # --------------------------------------------------------------------------
 
-@app.get("/history", tags=["meta"], summary="Audit log of actions taken through this backend")
+@app.get("/history", tags=["meta"], summary="Audit log of the caller's actions")
 def history(limit: int = Query(100, ge=1, le=1000), action: str | None = None):
-    return db.list_events(limit, action)
+    return store.list_events(auth.user_id_var.get(), limit, action)
 
 
 @app.get("/orders/history", tags=["orders"], summary="Past orders (filled/cancelled), newest first")
@@ -420,12 +379,40 @@ def cancel_all(symbol: str | None = None):
 
 
 # --------------------------------------------------------------------------
-# Web UI (static files are public; every data call from the UI still needs the key)
+# Settings
 # --------------------------------------------------------------------------
 
-async def _root(_: Request):
-    return RedirectResponse("/ui/")
+class DeltaCredsIn(BaseModel):
+    api_key: str
+    api_secret: str
+    env: Literal["india_prod", "india_testnet"] = "india_prod"
 
 
-app.add_route("/", _root, include_in_schema=False)
-app.mount("/ui", StaticFiles(directory=Path(__file__).resolve().parent / "static", html=True), name="ui")
+def _creds_view(uid: str) -> dict[str, Any]:
+    c = store.get_credentials(uid)
+    return {"is_set": True, "env": c.env, "api_key_masked": "••••" + c.api_key[-4:]} if c else {"is_set": False, "env": None, "api_key_masked": None}
+
+
+@app.get("/settings/delta", tags=["settings"], summary="Whether Delta keys are saved (never returns the secret)")
+def get_delta_settings():
+    return _creds_view(auth.user_id_var.get())
+
+
+@app.put("/settings/delta", tags=["settings"], summary="Validate and save the caller's Delta API keys")
+def put_delta_settings(body: DeltaCredsIn):
+    uid = auth.user_id_var.get()
+    tok = delta.use_credentials(body.api_key.strip(), body.api_secret.strip(), body.env)
+    try:
+        delta.get_balances()                       # cheap authenticated call proves the keys work for this env
+    except delta.DeltaAPIError as exc:
+        raise HTTPException(400, f"Delta rejected these credentials ({body.env}): {exc.payload}") from None
+    finally:
+        delta._CREDS.reset(tok)
+    store.save_credentials(uid, body.api_key.strip(), body.api_secret.strip(), body.env)
+    return _creds_view(uid)
+
+
+@app.delete("/settings/delta", tags=["settings"], summary="Remove the caller's saved Delta keys")
+def delete_delta_settings():
+    store.delete_credentials(auth.user_id_var.get())
+    return {"is_set": False}

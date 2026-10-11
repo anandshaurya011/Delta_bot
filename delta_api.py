@@ -689,6 +689,11 @@ def get_open_orders(symbol: str | None = None, states: str = "open,pending") -> 
     return _request("GET", "/v2/orders", query=query, auth=True)
 
 
+def get_order_by_id(order_id: int) -> dict:
+    """Single order lookup, used to confirm fill status after placing an order."""
+    return _request("GET", f"/v2/orders/{order_id}", auth=True)
+
+
 def place_order(
     symbol: str,
     side: str,

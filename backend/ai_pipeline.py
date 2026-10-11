@@ -149,14 +149,33 @@ def data_agent_node(
     raw = call_llm(
         model=settings["data_model"], system_prompt=system_prompt, user_content=user_content, on_chunk=on_chunk
     )
-    requested = json.loads(raw).get("tool_calls", [])
+    # The LLM is asked for {"tool_calls": [...]}, but nothing stops it from returning a
+    # bare JSON array, a non-list "tool_calls" value, or list entries that aren't
+    # {"name": ..., "args": {...}} objects -- any of which previously crashed the whole
+    # pipeline with an uncaught AttributeError/KeyError/TypeError (seen in manual testing
+    # via the chat UI). Gathering extra context is best-effort: a malformed response here
+    # should degrade to "no extra data gathered", not take down the chat/webhook request.
+    try:
+        parsed = json.loads(raw)
+        requested = parsed.get("tool_calls", []) if isinstance(parsed, dict) else []
+        if not isinstance(requested, list):
+            requested = []
+    except (json.JSONDecodeError, TypeError):
+        requested = []
+
     gathered: dict[str, Any] = {}
     for call in requested:
-        impl = _TOOL_IMPL.get(call["name"])
+        if not isinstance(call, dict):
+            continue
+        name = call.get("name")
+        impl = _TOOL_IMPL.get(name)
         if impl:
+            args = call.get("args", {})
+            if not isinstance(args, dict):
+                args = {}
             if on_event:
-                on_event({"node": "data_agent", "type": "tool_call", "name": call["name"], "args": call.get("args", {})})
-            gathered[call["name"]] = impl(call.get("args", {}))
+                on_event({"node": "data_agent", "type": "tool_call", "name": name, "args": args})
+            gathered[name] = impl(args)
     state["gathered_data"] = gathered
     return state
 

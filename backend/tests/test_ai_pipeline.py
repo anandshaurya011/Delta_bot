@@ -86,6 +86,41 @@ def test_data_agent_node_with_no_tool_calls_leaves_gathered_data_empty():
     assert state["gathered_data"] == {}
 
 
+def test_data_agent_node_bare_json_array_response_does_not_crash():
+    # Regression: seen via the chat UI ("Something went wrong: 'list' object has no
+    # attribute 'get'") -- the LLM returned a bare JSON array instead of
+    # {"tool_calls": [...]}. Must degrade to no gathered data, not crash the pipeline.
+    with patch("ai_pipeline.call_llm", return_value=json.dumps([{"name": "get_position"}])):
+        state = ai_pipeline.data_agent_node(_state())
+    assert state["gathered_data"] == {}
+
+
+def test_data_agent_node_non_list_tool_calls_value_does_not_crash():
+    with patch("ai_pipeline.call_llm", return_value=json.dumps({"tool_calls": "get_position"})):
+        state = ai_pipeline.data_agent_node(_state())
+    assert state["gathered_data"] == {}
+
+
+def test_data_agent_node_non_dict_entries_in_tool_calls_are_skipped():
+    with patch("ai_pipeline.call_llm", return_value=json.dumps({"tool_calls": ["get_position", {"no": "name"}]})):
+        state = ai_pipeline.data_agent_node(_state())
+    assert state["gathered_data"] == {}
+
+
+def test_data_agent_node_malformed_json_does_not_crash():
+    with patch("ai_pipeline.call_llm", return_value="not json at all"):
+        state = ai_pipeline.data_agent_node(_state())
+    assert state["gathered_data"] == {}
+
+
+def test_data_agent_node_non_dict_args_falls_back_to_empty_args():
+    with patch("ai_pipeline.call_llm", return_value=json.dumps({"tool_calls": [{"name": "get_balances", "args": "oops"}]})), \
+         patch("ai_pipeline.delta.get_balances", return_value={"usd": 100}) as mock_bal:
+        state = ai_pipeline.data_agent_node(_state())
+    mock_bal.assert_called_once_with()
+    assert state["gathered_data"]["get_balances"] == {"usd": 100}
+
+
 def test_wait_for_fill_returns_filled_when_unfilled_size_zero():
     with patch("ai_pipeline.delta.get_order_by_id", return_value={"id": 1, "state": "closed", "unfilled_size": 0}):
         result = ai_pipeline.wait_for_fill(1, timeout_s=1, interval_s=0.01)

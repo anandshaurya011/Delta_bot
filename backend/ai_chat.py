@@ -86,7 +86,9 @@ def handle_chat_message(user_id: str, message: str, settings: dict[str, Any], on
         state = ai_pipeline.coordinator_node(state, on_event=on_event)
         state = ai_pipeline.executer_node(state, on_event=on_event)
         result = {
+            "gathered_data": state["gathered_data"],
             "plan": state["plan"],
+            "order_request": state["order_request"],
             "execution_result": state["execution_result"],
         }
         store.update_signal_result(outcome["id"], "done", result)
@@ -94,7 +96,7 @@ def handle_chat_message(user_id: str, message: str, settings: dict[str, Any], on
             store.update_ai_settings(user_id, enabled=False)
         plan = result["plan"] or {}
         execution = result["execution_result"] or {}
-        summary = plan.get("reasoning", "") + (
+        summary = str(plan.get("reasoning", "")) + (
             f" -> executed: {execution.get('executed')}" if "executed" in execution else ""
         )
         store.add_chat_message(user_id, "assistant", summary or "Done.", signal_id=outcome["id"])

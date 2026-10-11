@@ -66,17 +66,22 @@ def test_handle_chat_message_question_path_never_calls_record_incoming_signal():
 def test_handle_chat_message_trade_path_calls_record_incoming_signal_and_executer():
     with patch("ai_chat.store.add_chat_message"), \
          patch("ai_chat.ai_pipeline.bind_user_credentials"), \
-         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: state), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: {**state, "gathered_data": {"price": 50000}}), \
          patch("ai_chat.resolve_chat_intent", return_value={"intent": "trade", "symbol": "BTCUSD", "timeframe": "15m", "action": "buy"}), \
          patch("ai_chat.store.record_incoming_signal", return_value={"id": 9, "status": "processing"}) as mock_record, \
          patch("ai_chat.ai_pipeline.coordinator_node", side_effect=lambda state, on_event=None: {**state, "plan": {"action": "hold", "side": "none", "size_hint": None, "reasoning": "x"}}), \
-         patch("ai_chat.ai_pipeline.executer_node", side_effect=lambda state, on_event=None: {**state, "execution_result": {"executed": False, "reason": "no_action"}}) as mock_exec, \
+         patch("ai_chat.ai_pipeline.executer_node", side_effect=lambda state, on_event=None: {**state, "order_request": {"symbol": "BTCUSD", "side": "buy", "size": 0}, "execution_result": {"executed": False, "reason": "no_action"}}) as mock_exec, \
          patch("ai_chat.store.update_signal_result") as mock_update:
         events = []
         ai_chat.handle_chat_message("user_1", "go long BTC on the 15m", BASE_SETTINGS, events.append)
     mock_record.assert_called_once_with("user_1", "BTCUSD", "15m", "buy", "go long BTC on the 15m", 30)
     mock_exec.assert_called_once()
-    mock_update.assert_called_once_with(9, "done", {"plan": {"action": "hold", "side": "none", "size_hint": None, "reasoning": "x"}, "execution_result": {"executed": False, "reason": "no_action"}})
+    mock_update.assert_called_once_with(9, "done", {
+        "gathered_data": {"price": 50000},
+        "plan": {"action": "hold", "side": "none", "size_hint": None, "reasoning": "x"},
+        "order_request": {"symbol": "BTCUSD", "side": "buy", "size": 0},
+        "execution_result": {"executed": False, "reason": "no_action"},
+    })
 
 
 def test_handle_chat_message_trade_path_skips_pipeline_when_duplicate_skipped():

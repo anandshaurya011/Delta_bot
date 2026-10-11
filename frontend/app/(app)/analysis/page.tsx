@@ -6,7 +6,7 @@ import { useSymbol } from "@/lib/symbol";
 import { useToast } from "@/components/Toast";
 import { Stat, Chip } from "@/components/Ui";
 import { AnalysisTable } from "@/components/AnalysisTable";
-import { TFS, pushSnapshot, type SnapState } from "@/lib/analysis";
+import { TFS, pushSnapshot, toggleSelected, type SnapState } from "@/lib/analysis";
 
 type AnalysisResponse = {
   symbol: string;
@@ -77,7 +77,7 @@ export default function AnalysisPage() {
 
   function toggleTf(t: string) {
     setSel((prev) => {
-      const next = prev.includes(t) ? prev.filter((x) => x !== t) : TFS.filter((x) => prev.includes(x) || x === t);
+      const next = toggleSelected(prev, t);
       try {
         window.localStorage.setItem("aSel", JSON.stringify(next));
       } catch {

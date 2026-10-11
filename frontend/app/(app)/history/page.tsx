@@ -9,7 +9,7 @@ import { Stat, Tag, Chip } from "@/components/Ui";
 import { kindOf, pnlOf, sortTrades, type OrderHistoryEntry } from "@/lib/history";
 import { buildTradeDetail, DetailDialog, type Fill } from "@/components/TradeDetail";
 
-// Ported from backend/static/index.html lines 213-264 (markup for the three history
+// Ported from the legacy UI lines 213-264 (markup for the three history
 // views), 703-918 (loadHistoryData, renderTrades/drawChart, renderHistory/describe/
 // outcome/repeatSpec, renderTimeline).
 

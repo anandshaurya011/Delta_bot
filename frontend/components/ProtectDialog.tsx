@@ -4,7 +4,7 @@ import { api, ApiError } from "@/lib/api";
 import { num } from "@/lib/format";
 import { useToast } from "./Toast";
 
-// Ported from backend/static/index.html lines 391-428 (openProtect / #prApply handler)
+// Ported from the legacy UI lines 391-428 (openProtect / #prApply handler)
 // and the <dialog id="protect"> markup at lines 273-284.
 
 export type ProtectCtx =

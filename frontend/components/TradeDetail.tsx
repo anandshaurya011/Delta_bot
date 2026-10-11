@@ -4,7 +4,7 @@ import { num, signClass } from "@/lib/format";
 import { kindOf, pnlOf, type OrderHistoryEntry } from "@/lib/history";
 import { Stat } from "./Ui";
 
-// Ported from backend/static/index.html lines 720-746 (openDetail / openTrade).
+// Ported from the legacy UI lines 720-746 (openDetail / openTrade).
 // openDetail is generic (used for both trade rows and action-log / timeline rows);
 // openTrade builds the trade-specific content. Both collapse into this one dialog,
 // driven by `content` built by the caller (see buildTradeDetail below, or raw JSX

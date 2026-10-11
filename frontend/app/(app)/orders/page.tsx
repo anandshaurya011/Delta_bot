@@ -10,7 +10,7 @@ import { Stat } from "@/components/Ui";
 import { ProtectDialog, type ProtectCtx } from "@/components/ProtectDialog";
 import { kindOf, pnlOf, type OrderHistoryEntry } from "@/lib/history";
 
-// Ported from backend/static/index.html lines 149-184 (markup, including the "Last
+// Ported from the legacy UI lines 149-184 (markup, including the "Last
 // closed trade" / "Order history" sections) and 437-463, 548-594 (loadHistoryOrders,
 // loadOrders, cancelOne, cancelAll/cancelAllSym, pCancelTrail, pGo / protect form).
 

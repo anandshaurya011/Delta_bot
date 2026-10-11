@@ -1,4 +1,4 @@
-// Ported from backend/static/index.html lines ~433-460 (kindOf, pnlOf, when) and
+// Ported from the legacy UI lines ~433-460 (kindOf, pnlOf, when) and
 // ~749-797 (closedTrades / trSort comparator logic).
 
 export type OrderHistoryEntry = {

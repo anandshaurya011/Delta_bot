@@ -23,7 +23,7 @@ function Header() {
     queryFn: () => api<{ price: number }>("GET", `/price/${symbol}`),
     refetchInterval: 5000,
   });
-  // Ported from backend/static/index.html lines 372-386 (refreshPos, the posStrip markup).
+  // Ported from the legacy UI lines 372-386 (refreshPos, the posStrip markup).
   const posQ = useQuery({
     queryKey: ["positions"],
     queryFn: () => api<HeaderPosition[]>("GET", "/positions"),

@@ -1,5 +1,5 @@
 "use client";
-// Ported from backend/static/index.html lines 489-545 (orderBody, submitOrder,
+// Ported from the legacy UI lines 489-545 (orderBody, submitOrder,
 // loadTrade, checkSize, the `.pct` buttons, levSet) plus the position-level
 // "Close" button (closePos, lines 487-490) for the current symbol.
 import { useEffect, useState } from "react";

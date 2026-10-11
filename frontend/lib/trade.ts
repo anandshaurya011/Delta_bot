@@ -1,4 +1,4 @@
-// Ported from backend/static/index.html lines 493-504 (orderBody, submitOrder's
+// Ported from the legacy UI lines 493-504 (orderBody, submitOrder's
 // confirmation text) and 537 (the `.pct` button handler's size-from-percent math).
 
 export type OrderForm = { symbol: string; size: string; price: string; sl: string; tp: string };

@@ -1,5 +1,5 @@
 "use client";
-// Ported from backend/static/index.html lines 476-490 (loadDash, closePos).
+// Ported from the legacy UI lines 476-490 (loadDash, closePos).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { num } from "@/lib/format";

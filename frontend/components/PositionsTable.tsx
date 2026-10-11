@@ -1,5 +1,5 @@
 "use client";
-// Ported from backend/static/index.html lines 387-391 (posTable) and 487-490
+// Ported from the legacy UI lines 387-391 (posTable) and 487-490
 // (closePos), shared by the Dashboard page and (in future) elsewhere.
 import { num, signClass } from "@/lib/format";
 import { api, ApiError } from "@/lib/api";

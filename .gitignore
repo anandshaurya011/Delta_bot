@@ -19,3 +19,4 @@ backend (Copy)/
 *.db-journal
 *.db-wal
 *.db-shm
+.worktrees/

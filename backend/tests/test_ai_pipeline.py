@@ -185,6 +185,63 @@ def test_executer_node_paper_trading_skips_real_order_and_records_paper_trade():
     }
 
 
+def test_executer_node_paper_trading_close_action_closes_open_trades_without_opening_new_one():
+    state = _state(plan={"action": "close", "side": "long", "size_hint": None, "reasoning": "close it"})
+    state["settings"]["paper_trading"] = True
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "sell", "size": 5})
+    closed = [{"id": 3, "status": "closed", "pnl": 25.0}]
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.delta.get_current_price", return_value=50100.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count") as mock_inc, \
+         patch("ai_pipeline.store.close_all_open_paper_trades", return_value=closed) as mock_close, \
+         patch("ai_pipeline.store.record_paper_trade") as mock_record, \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_close.assert_called_once_with("user_1", "BTCUSD", 50100.0)
+    mock_record.assert_not_called()
+    mock_place.assert_not_called()
+    mock_inc.assert_called_once()
+    assert state["execution_result"] == {
+        "executed": True,
+        "mode": "paper",
+        "action": "close",
+        "closed_trades": closed,
+        "fill_status": "filled",
+    }
+
+
+def test_executer_node_paper_trading_flip_action_closes_then_opens_new_trade():
+    state = _state(plan={"action": "flip", "side": "long", "size_hint": 5, "reasoning": "flip it"})
+    state["settings"]["paper_trading"] = True
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "sell", "size": 5})
+    closed = [{"id": 3, "status": "closed", "pnl": -10.0}]
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.delta.get_current_price", return_value=49900.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count") as mock_inc, \
+         patch("ai_pipeline.store.close_all_open_paper_trades", return_value=closed) as mock_close, \
+         patch("ai_pipeline.store.record_paper_trade", return_value=9) as mock_record, \
+         patch("ai_pipeline.delta.place_order") as mock_place:
+        state = ai_pipeline.executer_node(state)
+    mock_close.assert_called_once_with("user_1", "BTCUSD", 49900.0)
+    mock_record.assert_called_once_with("user_1", "BTCUSD", "sell", 5, 49900.0, signal_id=None)
+    mock_place.assert_not_called()
+    mock_inc.assert_called_once()
+    assert state["execution_result"] == {
+        "executed": True,
+        "mode": "paper",
+        "paper_trade_id": 9,
+        "fill_status": "filled",
+        "order": {"symbol": "BTCUSD", "side": "sell", "size": 5, "price": 49900.0},
+        "closed_trades": closed,
+    }
+
+
 def test_executer_node_paper_trading_still_enforces_guardrails():
     state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
     state["settings"]["paper_trading"] = True

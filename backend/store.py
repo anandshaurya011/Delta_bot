@@ -303,6 +303,28 @@ def close_paper_trade(trade_id: int, exit_price: float) -> dict[str, Any] | None
         return dict(row)
 
 
+def get_open_paper_trades(user_id: str, symbol: str) -> list[dict[str, Any]]:
+    with closing(_conn()) as c:
+        rows = c.execute(
+            "select * from ai_paper_trades where user_id=? and symbol=? and status='open' order by id",
+            (user_id, symbol),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def close_all_open_paper_trades(user_id: str, symbol: str, exit_price: float) -> list[dict[str, Any]]:
+    """Closes every open paper trade for (user_id, symbol) at exit_price. Used to auto-close
+    paper positions when the coordinator decides to close or flip -- a real trade would close
+    the existing exchange position via a counter-order; a paper position has no exchange-side
+    equivalent, so the simulation closes it explicitly here instead."""
+    closed = []
+    for trade in get_open_paper_trades(user_id, symbol):
+        result = close_paper_trade(trade["id"], exit_price)
+        if result:
+            closed.append(result)
+    return closed
+
+
 def list_paper_trades(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
     with closing(_conn()) as c:
         rows = c.execute(

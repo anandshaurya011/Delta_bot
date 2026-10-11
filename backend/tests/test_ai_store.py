@@ -200,3 +200,28 @@ def test_paper_trades_are_scoped_per_user(store):
     store.record_paper_trade("user_2", "ETHUSD", "buy", 5, 3000.0)
     assert len(store.list_paper_trades("user_1")) == 1
     assert store.list_paper_trades("user_1")[0]["symbol"] == "BTCUSD"
+
+
+def test_get_open_paper_trades_filters_by_symbol_and_status(store):
+    store.record_paper_trade("user_1", "BTCUSD", "buy", 5, 50000.0)
+    closed_id = store.record_paper_trade("user_1", "BTCUSD", "buy", 2, 49000.0)
+    store.close_paper_trade(closed_id, 49500.0)
+    store.record_paper_trade("user_1", "ETHUSD", "buy", 1, 3000.0)
+    open_btc = store.get_open_paper_trades("user_1", "BTCUSD")
+    assert len(open_btc) == 1
+    assert open_btc[0]["size"] == 5
+
+
+def test_close_all_open_paper_trades_closes_every_open_trade_for_symbol(store):
+    store.record_paper_trade("user_1", "BTCUSD", "buy", 5, 50000.0)
+    store.record_paper_trade("user_1", "BTCUSD", "buy", 3, 50200.0)
+    store.record_paper_trade("user_1", "ETHUSD", "buy", 1, 3000.0)
+    closed = store.close_all_open_paper_trades("user_1", "BTCUSD", 50500.0)
+    assert len(closed) == 2
+    assert all(t["status"] == "closed" for t in closed)
+    assert store.get_open_paper_trades("user_1", "BTCUSD") == []
+    assert len(store.get_open_paper_trades("user_1", "ETHUSD")) == 1
+
+
+def test_close_all_open_paper_trades_is_noop_when_none_open(store):
+    assert store.close_all_open_paper_trades("user_1", "BTCUSD", 50000.0) == []

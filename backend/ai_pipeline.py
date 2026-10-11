@@ -272,6 +272,27 @@ def executer_node(
         # would for a real trade -- only the exchange call is skipped, replaced with an
         # immediate simulated fill at the current market price. No real order is placed.
         price = delta.get_current_price(symbol)
+        action = plan.get("action")
+        if action in ("close", "flip"):
+            # A real "close"/"flip" trade closes the existing exchange position via a
+            # counter-order; a simulated position has no exchange side to close, so
+            # explicitly close every open paper trade for this symbol here. "flip" then
+            # falls through to open the new, opposite-direction paper trade below; "close"
+            # does not -- there is nothing left to open.
+            closed = store.close_all_open_paper_trades(state["user_id"], symbol, price)
+            if action == "close":
+                store.increment_trade_count(state["user_id"])
+                state["execution_result"] = {
+                    "executed": True,
+                    "mode": "paper",
+                    "action": "close",
+                    "closed_trades": closed,
+                    "fill_status": "filled",
+                }
+                return state
+        else:
+            closed = []
+
         trade_id = store.record_paper_trade(
             state["user_id"], symbol, order_request["side"], order_request["size"], price,
             signal_id=state.get("signal_id"),
@@ -283,6 +304,7 @@ def executer_node(
             "paper_trade_id": trade_id,
             "fill_status": "filled",
             "order": {"symbol": symbol, "side": order_request["side"], "size": order_request["size"], "price": price},
+            **({"closed_trades": closed} if closed else {}),
         }
         return state
 

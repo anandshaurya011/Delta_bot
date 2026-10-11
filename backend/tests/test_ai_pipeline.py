@@ -163,3 +163,18 @@ def test_executer_node_handles_missing_required_field_from_llm():
         state = ai_pipeline.executer_node(state)
     mock_place.assert_not_called()
     assert state["execution_result"] == {"executed": False, "reason": "invalid_order_request"}
+
+
+def test_run_pipeline_wires_all_three_nodes_in_order():
+    data_response = json.dumps({"tool_calls": []})
+    plan_response = json.dumps({"action": "hold", "side": "none", "size_hint": None, "reasoning": "no edge"})
+    with patch("ai_pipeline.bind_user_credentials") as mock_bind, \
+         patch("ai_pipeline.call_llm", side_effect=[data_response, plan_response]):
+        result = ai_pipeline.run_pipeline(
+            "user_1",
+            {"symbol": "BTCUSD", "timeframe": "15m", "action": "buy", "note": None},
+            _state()["settings"],
+        )
+    mock_bind.assert_called_once_with("user_1")
+    assert result["plan"]["action"] == "hold"
+    assert result["execution_result"] == {"executed": False, "reason": "no_action"}

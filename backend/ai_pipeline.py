@@ -183,3 +183,36 @@ def executer_node(state: PipelineState) -> PipelineState:
     else:
         state["execution_result"] = {"executed": False, "reason": fill["outcome"], "order": fill["order"]}
     return state
+
+
+from langgraph.graph import StateGraph, END
+
+_graph = StateGraph(PipelineState)
+_graph.add_node("data_agent", data_agent_node)
+_graph.add_node("coordinator", coordinator_node)
+_graph.add_node("executer", executer_node)
+_graph.set_entry_point("data_agent")
+_graph.add_edge("data_agent", "coordinator")
+_graph.add_edge("coordinator", "executer")
+_graph.add_edge("executer", END)
+_compiled_graph = _graph.compile()
+
+
+def run_pipeline(user_id: str, signal: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    bind_user_credentials(user_id)
+    initial_state: PipelineState = {
+        "user_id": user_id,
+        "signal": signal,
+        "settings": settings,
+        "gathered_data": {},
+        "plan": None,
+        "order_request": None,
+        "execution_result": None,
+    }
+    final_state = _compiled_graph.invoke(initial_state)
+    return {
+        "gathered_data": final_state["gathered_data"],
+        "plan": final_state["plan"],
+        "order_request": final_state["order_request"],
+        "execution_result": final_state["execution_result"],
+    }

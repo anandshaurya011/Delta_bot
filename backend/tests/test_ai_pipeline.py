@@ -327,3 +327,117 @@ def test_run_pipeline_wires_all_three_nodes_in_order():
     mock_bind.assert_called_once_with("user_1")
     assert result["plan"]["action"] == "hold"
     assert result["execution_result"] == {"executed": False, "reason": "no_action"}
+
+
+def test_call_llm_without_on_chunk_is_unchanged_non_streaming_call():
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock(message=MagicMock(content="hello"))]
+    with patch("ai_pipeline._get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = fake_response
+        result = ai_pipeline.call_llm(model="gpt-4.1", system_prompt="sys", user_content="hi")
+    assert result == "hello"
+    _, kwargs = mock_get_client.return_value.chat.completions.create.call_args
+    assert "stream" not in kwargs or kwargs["stream"] is False
+
+
+def test_call_llm_with_on_chunk_streams_and_accumulates_full_text():
+    chunk1 = MagicMock()
+    chunk1.choices = [MagicMock(delta=MagicMock(content="hel"))]
+    chunk2 = MagicMock()
+    chunk2.choices = [MagicMock(delta=MagicMock(content="lo"))]
+    with patch("ai_pipeline._get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = iter([chunk1, chunk2])
+        received = []
+        result = ai_pipeline.call_llm(
+            model="gpt-4.1", system_prompt="sys", user_content="hi", on_chunk=received.append
+        )
+    assert result == "hello"
+    assert received == ["hel", "lo"]
+    _, kwargs = mock_get_client.return_value.chat.completions.create.call_args
+    assert kwargs["stream"] is True
+
+
+def test_coordinator_node_with_on_event_emits_token_events():
+    chunk1 = MagicMock()
+    chunk1.choices = [MagicMock(delta=MagicMock(content='{"action":'))]
+    chunk2 = MagicMock()
+    chunk2.choices = [MagicMock(delta=MagicMock(content='"hold","side":"none","size_hint":null,"reasoning":"x"}'))]
+    with patch("ai_pipeline._get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = iter([chunk1, chunk2])
+        events = []
+        state = ai_pipeline.coordinator_node(_state(), on_event=events.append)
+    assert state["plan"]["action"] == "hold"
+    token_events = [e for e in events if e["type"] == "token"]
+    assert [e["node"] for e in token_events] == ["coordinator", "coordinator"]
+    assert "".join(e["text"] for e in token_events) == '{"action":"hold","side":"none","size_hint":null,"reasoning":"x"}'
+
+
+def test_coordinator_node_without_on_event_unchanged():
+    fake_response = json.dumps({"action": "hold", "side": "none", "size_hint": None, "reasoning": "x"})
+    with patch("ai_pipeline.call_llm", return_value=fake_response) as mock_call:
+        state = ai_pipeline.coordinator_node(_state())
+    assert state["plan"]["action"] == "hold"
+    _, kwargs = mock_call.call_args
+    assert kwargs.get("on_chunk") is None
+
+
+def test_data_agent_node_with_on_event_emits_tool_call_events():
+    tool_call_response = json.dumps({"tool_calls": [{"name": "get_position", "args": {"symbol": "BTCUSD"}}]})
+    with patch("ai_pipeline.call_llm", return_value=tool_call_response), \
+         patch("ai_pipeline.delta.get_position", return_value={"size": 5}):
+        events = []
+        ai_pipeline.data_agent_node(_state(), on_event=events.append)
+    tool_events = [e for e in events if e["type"] == "tool_call"]
+    assert tool_events == [{"node": "data_agent", "type": "tool_call", "name": "get_position", "args": {"symbol": "BTCUSD"}}]
+
+
+def test_executer_node_with_on_event_emits_guardrail_result_event():
+    state = _state(plan={"action": "open", "side": "long", "size_hint": 5, "reasoning": "go long"})
+    order_response = json.dumps({"symbol": "BTCUSD", "side": "buy", "size": 5})
+    placed_order = {"id": 50}
+    filled_order = {"id": 50, "state": "closed", "unfilled_size": 0}
+    with patch("ai_pipeline.call_llm", return_value=order_response), \
+         patch("ai_pipeline.delta.get_position", return_value=None), \
+         patch("ai_pipeline.delta.get_total_unrealized_pnl", return_value=0.0), \
+         patch("ai_pipeline.store.get_trade_count_today", return_value=0), \
+         patch("ai_pipeline.store.increment_trade_count"), \
+         patch("ai_pipeline.delta.place_order", return_value=placed_order), \
+         patch("ai_pipeline.delta.get_order_by_id", return_value=filled_order):
+        events = []
+        ai_pipeline.executer_node(state, on_event=events.append)
+    guardrail_events = [e for e in events if e["type"] == "guardrail_result"]
+    assert guardrail_events == [{"node": "executer", "type": "guardrail_result", "allowed": True, "reason": None}]
+
+
+def test_run_pipeline_with_on_event_threads_through_all_nodes():
+    # NOTE: mocking ai_pipeline.call_llm directly (as other tests in this file do) would
+    # bypass on_chunk entirely -- the Mock never invokes the callback -- so with an empty
+    # tool_calls list and a "hold" plan (which short-circuits executer_node before any
+    # guardrail event), zero events would ever be emitted regardless of whether on_event
+    # threading is correct. To actually exercise on_event threading through run_pipeline,
+    # this test mocks the client at the _get_client level and streams, like the
+    # coordinator/data_agent token-event tests above.
+    data_chunk = MagicMock()
+    data_chunk.choices = [MagicMock(delta=MagicMock(content=json.dumps({"tool_calls": []})))]
+    plan_chunk = MagicMock()
+    plan_chunk.choices = [
+        MagicMock(
+            delta=MagicMock(
+                content=json.dumps(
+                    {"action": "hold", "side": "none", "size_hint": None, "reasoning": "no edge"}
+                )
+            )
+        )
+    ]
+    with patch("ai_pipeline.bind_user_credentials"), \
+         patch("ai_pipeline._get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.side_effect = [iter([data_chunk]), iter([plan_chunk])]
+        events = []
+        result = ai_pipeline.run_pipeline(
+            "user_1", {"symbol": "BTCUSD", "timeframe": "15m", "action": "buy", "note": None},
+            _state()["settings"], on_event=events.append,
+        )
+    assert result["plan"]["action"] == "hold"
+    nodes_seen = {e["node"] for e in events}
+    assert "data_agent" in nodes_seen
+    assert "coordinator" in nodes_seen

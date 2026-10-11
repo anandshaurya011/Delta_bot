@@ -8,7 +8,7 @@ plain Python and never goes through `call_llm`.
 from __future__ import annotations
 
 import json
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 from openai import OpenAI
 
@@ -35,7 +35,13 @@ class PipelineState(TypedDict, total=False):
     execution_result: dict[str, Any] | None
 
 
-def call_llm(model: str, system_prompt: str, user_content: str, tools: list[dict[str, Any]] | None = None) -> str:
+def call_llm(
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    tools: list[dict[str, Any]] | None = None,
+    on_chunk: Callable[[str], None] | None = None,
+) -> str:
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
@@ -43,8 +49,17 @@ def call_llm(model: str, system_prompt: str, user_content: str, tools: list[dict
     }
     if tools:
         kwargs["tools"] = tools
-    response = _get_client().chat.completions.create(**kwargs)
-    return response.choices[0].message.content
+    if on_chunk is None:
+        response = _get_client().chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+    kwargs["stream"] = True
+    full_text = ""
+    for chunk in _get_client().chat.completions.create(**kwargs):
+        delta = chunk.choices[0].delta.content
+        if delta:
+            on_chunk(delta)
+            full_text += delta
+    return full_text
 
 
 _COORDINATOR_BASE_PROMPT = (
@@ -55,13 +70,18 @@ _COORDINATOR_BASE_PROMPT = (
 )
 
 
-def coordinator_node(state: PipelineState) -> PipelineState:
+def coordinator_node(
+    state: PipelineState, on_event: Callable[[dict[str, Any]], None] | None = None
+) -> PipelineState:
     settings = state["settings"]
     system_prompt = _COORDINATOR_BASE_PROMPT
     if settings.get("coordinator_prompt"):
         system_prompt += "\n\nUser instructions: " + settings["coordinator_prompt"]
     user_content = json.dumps({"signal": state["signal"], "gathered_data": state.get("gathered_data", {})})
-    raw = call_llm(model=settings["coordinator_model"], system_prompt=system_prompt, user_content=user_content)
+    on_chunk = (lambda text: on_event({"node": "coordinator", "type": "token", "text": text})) if on_event else None
+    raw = call_llm(
+        model=settings["coordinator_model"], system_prompt=system_prompt, user_content=user_content, on_chunk=on_chunk
+    )
     state["plan"] = json.loads(raw)
     return state
 
@@ -109,18 +129,25 @@ _DATA_AGENT_BASE_PROMPT = (
 )
 
 
-def data_agent_node(state: PipelineState) -> PipelineState:
+def data_agent_node(
+    state: PipelineState, on_event: Callable[[dict[str, Any]], None] | None = None
+) -> PipelineState:
     settings = state["settings"]
     system_prompt = _DATA_AGENT_BASE_PROMPT
     if settings.get("data_prompt"):
         system_prompt += "\n\nUser instructions: " + settings["data_prompt"]
     user_content = json.dumps({"signal": state["signal"]})
-    raw = call_llm(model=settings["data_model"], system_prompt=system_prompt, user_content=user_content)
+    on_chunk = (lambda text: on_event({"node": "data_agent", "type": "token", "text": text})) if on_event else None
+    raw = call_llm(
+        model=settings["data_model"], system_prompt=system_prompt, user_content=user_content, on_chunk=on_chunk
+    )
     requested = json.loads(raw).get("tool_calls", [])
     gathered: dict[str, Any] = {}
     for call in requested:
         impl = _TOOL_IMPL.get(call["name"])
         if impl:
+            if on_event:
+                on_event({"node": "data_agent", "type": "tool_call", "name": call["name"], "args": call.get("args", {})})
             gathered[call["name"]] = impl(call.get("args", {}))
     state["gathered_data"] = gathered
     return state
@@ -157,7 +184,9 @@ def wait_for_fill(order_id: int, timeout_s: float = 10.0, interval_s: float = 1.
         _time.sleep(interval_s)
 
 
-def executer_node(state: PipelineState) -> PipelineState:
+def executer_node(
+    state: PipelineState, on_event: Callable[[dict[str, Any]], None] | None = None
+) -> PipelineState:
     plan = state["plan"] or {}
     if plan.get("action") in (None, "hold") or plan.get("side") == "none":
         state["execution_result"] = {"executed": False, "reason": "no_action"}
@@ -168,7 +197,10 @@ def executer_node(state: PipelineState) -> PipelineState:
     if settings.get("executer_prompt"):
         system_prompt += "\n\nUser instructions: " + settings["executer_prompt"]
     user_content = json.dumps({"plan": plan, "signal": state["signal"]})
-    raw = call_llm(model=settings["executer_model"], system_prompt=system_prompt, user_content=user_content)
+    on_chunk = (lambda text: on_event({"node": "executer", "type": "token", "text": text})) if on_event else None
+    raw = call_llm(
+        model=settings["executer_model"], system_prompt=system_prompt, user_content=user_content, on_chunk=on_chunk
+    )
     try:
         order_request = json.loads(raw)
         symbol = order_request["symbol"]
@@ -221,6 +253,15 @@ def executer_node(state: PipelineState) -> PipelineState:
         "daily_pnl": delta.get_total_unrealized_pnl(),
     }
     guardrail_result = evaluate_guardrails(order_request, settings.get("guardrails_json", {}), context)
+    if on_event:
+        on_event(
+            {
+                "node": "executer",
+                "type": "guardrail_result",
+                "allowed": guardrail_result.allowed,
+                "reason": guardrail_result.reason,
+            }
+        )
     if not guardrail_result.allowed:
         state["execution_result"] = {"executed": False, "reason": guardrail_result.reason}
         return state
@@ -248,9 +289,14 @@ _graph.add_edge("executer", END)
 _compiled_graph = _graph.compile()
 
 
-def run_pipeline(user_id: str, signal: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+def run_pipeline(
+    user_id: str,
+    signal: dict[str, Any],
+    settings: dict[str, Any],
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     bind_user_credentials(user_id)
-    initial_state: PipelineState = {
+    state: PipelineState = {
         "user_id": user_id,
         "signal": signal,
         "settings": settings,
@@ -259,10 +305,12 @@ def run_pipeline(user_id: str, signal: dict[str, Any], settings: dict[str, Any])
         "order_request": None,
         "execution_result": None,
     }
-    final_state = _compiled_graph.invoke(initial_state)
+    state = data_agent_node(state, on_event=on_event)
+    state = coordinator_node(state, on_event=on_event)
+    state = executer_node(state, on_event=on_event)
     return {
-        "gathered_data": final_state["gathered_data"],
-        "plan": final_state["plan"],
-        "order_request": final_state["order_request"],
-        "execution_result": final_state["execution_result"],
+        "gathered_data": state["gathered_data"],
+        "plan": state["plan"],
+        "order_request": state["order_request"],
+        "execution_result": state["execution_result"],
     }

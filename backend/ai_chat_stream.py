@@ -29,13 +29,25 @@ def publish(user_id: str, event: dict[str, Any]) -> None:
         q.put_nowait(event)
 
 
-def drain(user_id: str) -> Iterator[dict[str, Any]]:
+def drain(user_id: str, timeout_s: float = 30) -> Iterator[dict[str, Any]]:
     q = get_queue(user_id)
     while True:
         try:
-            event = q.get(timeout=30)
+            event = q.get(timeout=timeout_s)
         except queue.Empty:
+            yield {"type": "heartbeat"}
             continue
         yield event
         if event.get("type") in ("done", "error"):
+            return
+
+
+def clear_stale(user_id: str) -> None:
+    """Drop any leftover events sitting in a user's queue from a previous,
+    incompletely-consumed stream, so a fresh stream request starts clean."""
+    q = get_queue(user_id)
+    while True:
+        try:
+            q.get_nowait()
+        except queue.Empty:
             return

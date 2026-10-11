@@ -142,13 +142,47 @@ def test_get_ai_chat_messages_returns_store_contents(client):
 
 
 def test_get_ai_chat_stream_yields_published_events(client):
+    # The endpoint clears any stale leftover events for this user before it starts
+    # draining (finding: stale events from a previous, incompletely-consumed stream
+    # must not leak into a new one), so these events are published slightly AFTER
+    # the stream has started draining -- that's what a real background chat task
+    # publishing while the browser's SSE connection is open looks like.
+    import threading
+    import time
+
     import ai_chat_stream
-    ai_chat_stream.publish("user_1", {"type": "token", "text": "hi"})
-    ai_chat_stream.publish("user_1", {"type": "done"})
+
+    def _publish_soon():
+        time.sleep(0.05)
+        ai_chat_stream.publish("user_1", {"type": "token", "text": "hi"})
+        ai_chat_stream.publish("user_1", {"type": "done"})
+
+    threading.Thread(target=_publish_soon, daemon=True).start()
     resp = client.get("/ai/chat/stream")
     assert resp.status_code == 200
     assert "data:" in resp.text
     assert '"type": "done"' in resp.text or '"type":"done"' in resp.text
+
+
+def test_get_ai_chat_stream_discards_stale_events_from_before_the_request(client):
+    import ai_chat_stream
+
+    ai_chat_stream.publish("user_1", {"type": "token", "text": "stale, never read by a previous stream"})
+
+    def _publish_soon():
+        import time
+
+        time.sleep(0.05)
+        ai_chat_stream.publish("user_1", {"type": "token", "text": "fresh"})
+        ai_chat_stream.publish("user_1", {"type": "done"})
+
+    import threading
+
+    threading.Thread(target=_publish_soon, daemon=True).start()
+    resp = client.get("/ai/chat/stream")
+    assert resp.status_code == 200
+    assert "stale" not in resp.text
+    assert "fresh" in resp.text
 
 
 def test_publish_failure_inside_on_event_does_not_mark_trade_as_error(client):

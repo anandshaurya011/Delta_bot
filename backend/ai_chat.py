@@ -42,74 +42,85 @@ def resolve_chat_intent(message: str, settings: dict[str, Any]) -> dict[str, Any
 
 
 def handle_chat_message(user_id: str, message: str, settings: dict[str, Any], on_event: Callable[[dict[str, Any]], None]) -> None:
-    store.add_chat_message(user_id, "user", message)
-    ai_pipeline.bind_user_credentials(user_id)
-
-    state: ai_pipeline.PipelineState = {
-        "user_id": user_id,
-        "signal": {"symbol": "", "timeframe": "", "action": "", "note": message},
-        "settings": settings,
-        "gathered_data": {},
-        "plan": None,
-        "order_request": None,
-        "execution_result": None,
-    }
-    state = ai_pipeline.data_agent_node(state, on_event=on_event)
-
-    intent = resolve_chat_intent(message, settings)
-
-    if intent["intent"] == "trade" and not settings.get("enabled"):
-        store.add_chat_message(
-            user_id, "assistant",
-            "AI trading is currently disabled in your settings, so I can't act on that -- enable it on the AI Trading page first.",
-        )
-        on_event({"type": "done"})
-        return
-
-    if intent["intent"] == "question":
-        on_chunk = lambda text: on_event({"node": "coordinator", "type": "token", "text": text})
-        reply = ai_pipeline.call_llm(
-            model=settings["coordinator_model"],
-            system_prompt=_CHAT_ANSWER_PROMPT,
-            user_content=json.dumps({"message": message, "gathered_data": state["gathered_data"]}),
-            on_chunk=on_chunk,
-        )
-        store.add_chat_message(user_id, "assistant", reply)
-        on_event({"type": "done"})
-        return
-
-    symbol, timeframe, action = intent["symbol"], intent["timeframe"], intent["action"]
-    outcome = store.record_incoming_signal(user_id, symbol, timeframe, action, message, settings["cooldown_minutes"])
-    if outcome["status"] != "processing":
-        store.add_chat_message(
-            user_id, "assistant",
-            f"Skipped ({outcome['status']}) -- a recent signal for {symbol} {timeframe} is already in flight or cooling down.",
-            signal_id=outcome["id"],
-        )
-        on_event({"type": "done"})
-        return
-
-    state["signal"] = {"symbol": symbol, "timeframe": timeframe, "action": action, "note": message}
     try:
-        state = ai_pipeline.coordinator_node(state, on_event=on_event)
-        state = ai_pipeline.executer_node(state, on_event=on_event)
-        result = {
-            "gathered_data": state["gathered_data"],
-            "plan": state["plan"],
-            "order_request": state["order_request"],
-            "execution_result": state["execution_result"],
+        store.add_chat_message(user_id, "user", message)
+        ai_pipeline.bind_user_credentials(user_id)
+
+        state: ai_pipeline.PipelineState = {
+            "user_id": user_id,
+            "signal": {"symbol": "", "timeframe": "", "action": "", "note": message},
+            "settings": settings,
+            "gathered_data": {},
+            "plan": None,
+            "order_request": None,
+            "execution_result": None,
         }
-        store.update_signal_result(outcome["id"], "done", result)
-        if (result["execution_result"] or {}).get("reason") == "guardrail:max_daily_loss":
-            store.update_ai_settings(user_id, enabled=False)
-        plan = result["plan"] or {}
-        execution = result["execution_result"] or {}
-        summary = str(plan.get("reasoning", "")) + (
-            f" -> executed: {execution.get('executed')}" if "executed" in execution else ""
-        )
-        store.add_chat_message(user_id, "assistant", summary or "Done.", signal_id=outcome["id"])
-    except Exception as exc:  # pragma: no cover - defensive, mirrors main.py's _run_signal_pipeline
-        store.update_signal_result(outcome["id"], "error", {"error": str(exc)})
-        store.add_chat_message(user_id, "assistant", f"Something went wrong: {exc}", signal_id=outcome["id"])
-        on_event({"type": "error", "message": str(exc)})
-    on_event({"type": "done"})
+        state = ai_pipeline.data_agent_node(state, on_event=on_event)
+
+        intent = resolve_chat_intent(message, settings)
+
+        if intent["intent"] == "trade" and not settings.get("enabled"):
+            store.add_chat_message(
+                user_id, "assistant",
+                "AI trading is currently disabled in your settings, so I can't act on that -- enable it on the AI Trading page first.",
+            )
+            return
+
+        if intent["intent"] == "question":
+            on_chunk = lambda text: on_event({"node": "coordinator", "type": "token", "text": text})
+            reply = ai_pipeline.call_llm(
+                model=settings["coordinator_model"],
+                system_prompt=_CHAT_ANSWER_PROMPT,
+                user_content=json.dumps({"message": message, "gathered_data": state["gathered_data"]}),
+                on_chunk=on_chunk,
+            )
+            store.add_chat_message(user_id, "assistant", reply)
+            return
+
+        symbol, timeframe, action = intent["symbol"], intent["timeframe"], intent["action"]
+        outcome = store.record_incoming_signal(user_id, symbol, timeframe, action, message, settings["cooldown_minutes"])
+        if outcome["status"] != "processing":
+            store.add_chat_message(
+                user_id, "assistant",
+                f"Skipped ({outcome['status']}) -- a recent signal for {symbol} {timeframe} is already in flight or cooling down.",
+                signal_id=outcome["id"],
+            )
+            return
+
+        state["signal"] = {"symbol": symbol, "timeframe": timeframe, "action": action, "note": message}
+        try:
+            state = ai_pipeline.coordinator_node(state, on_event=on_event)
+            state = ai_pipeline.executer_node(state, on_event=on_event)
+            result = {
+                "gathered_data": state["gathered_data"],
+                "plan": state["plan"],
+                "order_request": state["order_request"],
+                "execution_result": state["execution_result"],
+            }
+            store.update_signal_result(outcome["id"], "done", result)
+            if (result["execution_result"] or {}).get("reason") == "guardrail:max_daily_loss":
+                store.update_ai_settings(user_id, enabled=False)
+            plan = result["plan"] or {}
+            execution = result["execution_result"] or {}
+            summary = str(plan.get("reasoning", "")) + (
+                f" -> executed: {execution.get('executed')}" if "executed" in execution else ""
+            )
+            store.add_chat_message(user_id, "assistant", summary or "Done.", signal_id=outcome["id"])
+        except Exception as exc:  # pragma: no cover - defensive, mirrors main.py's _run_signal_pipeline
+            store.update_signal_result(outcome["id"], "error", {"error": str(exc)})
+            store.add_chat_message(user_id, "assistant", f"Something went wrong: {exc}", signal_id=outcome["id"])
+            on_event({"type": "error", "message": str(exc)})
+    except Exception as exc:
+        try:
+            store.add_chat_message(user_id, "assistant", f"Something went wrong: {exc}")
+        except Exception:
+            pass
+        try:
+            on_event({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        try:
+            on_event({"type": "done"})
+        except Exception:
+            pass

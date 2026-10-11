@@ -29,3 +29,22 @@ def test_publish_drops_oldest_when_queue_full():
     events = list(ai_chat_stream.drain(user_id))
     assert events[-1] == {"type": "done"}
     assert len(events) <= 201  # bounded, did not grow unbounded or block
+
+
+def test_drain_yields_heartbeat_after_timeout_with_no_new_events():
+    user_id = "user_heartbeat"
+    gen = ai_chat_stream.drain(user_id, timeout_s=0.05)
+    event = next(gen)
+    assert event == {"type": "heartbeat"}
+    gen.close()
+
+
+def test_clear_stale_discards_leftover_events_before_next_drain():
+    user_id = "user_stale"
+    ai_chat_stream.publish(user_id, {"type": "token", "text": "stale 1"})
+    ai_chat_stream.publish(user_id, {"type": "token", "text": "stale 2"})
+    ai_chat_stream.clear_stale(user_id)
+    ai_chat_stream.publish(user_id, {"type": "token", "text": "fresh"})
+    ai_chat_stream.publish(user_id, {"type": "done"})
+    events = list(ai_chat_stream.drain(user_id))
+    assert events == [{"type": "token", "text": "fresh"}, {"type": "done"}]

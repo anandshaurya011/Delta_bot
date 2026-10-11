@@ -531,6 +531,7 @@ def post_ai_chat(body: ChatMessageIn, background_tasks: BackgroundTasks):
 @app.get("/ai/chat/stream", tags=["ai"])
 def get_ai_chat_stream():
     user_id = auth.user_id_var.get()
+    ai_chat_stream.clear_stale(user_id)
 
     def event_source():
         for event in ai_chat_stream.drain(user_id):

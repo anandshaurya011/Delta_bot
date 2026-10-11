@@ -112,3 +112,50 @@ def test_handle_chat_message_trade_path_skips_pipeline_when_duplicate_skipped():
     mock_exec.assert_not_called()
     assert any(e.get("type") == "done" for e in events)
     assert mock_add.call_count == 2  # user message + an assistant message explaining the skip
+
+
+def test_handle_chat_message_resolve_chat_intent_failure_still_emits_done_and_error():
+    with patch("ai_chat.store.add_chat_message") as mock_add, \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: state), \
+         patch("ai_chat.resolve_chat_intent", side_effect=RuntimeError("openai rate limit")):
+        events = []
+        ai_chat.handle_chat_message("user_1", "go long BTC", BASE_SETTINGS, events.append)
+    done_events = [e for e in events if e.get("type") == "done"]
+    error_events = [e for e in events if e.get("type") == "error"]
+    assert len(done_events) == 1
+    assert len(error_events) == 1
+    assert "openai rate limit" in error_events[0]["message"]
+    # user message + the error message
+    assert mock_add.call_count == 2
+    assert mock_add.call_args_list[1].args[:2] == ("user_1", "assistant")
+
+
+def test_handle_chat_message_data_agent_node_failure_still_emits_done_and_error():
+    with patch("ai_chat.store.add_chat_message") as mock_add, \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=RuntimeError("data agent exploded")):
+        events = []
+        ai_chat.handle_chat_message("user_1", "what's the price of BTC?", BASE_SETTINGS, events.append)
+    done_events = [e for e in events if e.get("type") == "done"]
+    error_events = [e for e in events if e.get("type") == "error"]
+    assert len(done_events) == 1
+    assert len(error_events) == 1
+    assert "data agent exploded" in error_events[0]["message"]
+    assert mock_add.call_count == 2
+
+
+def test_handle_chat_message_question_path_call_llm_failure_still_emits_done_and_error():
+    with patch("ai_chat.store.add_chat_message") as mock_add, \
+         patch("ai_chat.ai_pipeline.bind_user_credentials"), \
+         patch("ai_chat.ai_pipeline.data_agent_node", side_effect=lambda state, on_event=None: state), \
+         patch("ai_chat.resolve_chat_intent", return_value={"intent": "question"}), \
+         patch("ai_chat.ai_pipeline.call_llm", side_effect=RuntimeError("openai timeout")):
+        events = []
+        ai_chat.handle_chat_message("user_1", "what's the price of BTC?", BASE_SETTINGS, events.append)
+    done_events = [e for e in events if e.get("type") == "done"]
+    error_events = [e for e in events if e.get("type") == "error"]
+    assert len(done_events) == 1
+    assert len(error_events) == 1
+    assert "openai timeout" in error_events[0]["message"]
+    assert mock_add.call_count == 2

@@ -83,7 +83,7 @@ def audited(action: str):
     return wrap
 
 
-Resolution = Literal["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "1d", "1w"]
+Resolution = Literal["5s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "1d", "1w"]
 Side = Literal["buy", "sell"]
 
 

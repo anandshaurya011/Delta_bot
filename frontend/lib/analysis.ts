@@ -1,4 +1,4 @@
-export const TFS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "1d", "1w"] as const;
+export const TFS = ["5s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "1d", "1w"] as const;
 export const MARK_COLORS = [
   "#f59e0b", "#22d3ee", "#c084fc", "#f472b6", "#a3e635", "#fb7185",
   "#60a5fa", "#34d399", "#fbbf24", "#e879f9", "#2dd4bf", "#f87171",

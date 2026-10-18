@@ -60,7 +60,9 @@ export function AnalysisTable({
                     </label>
                   </td>
                   <td colSpan={COLS.length - 1} className="d" style={{ textAlign: "left" }}>
-                    {/need at least \d+ candles/i.test(x.error) ? "data is not present" : `error: ${x.error}`}
+                    {/need at least \d+ candles|resolution is supported only for/i.test(x.error)
+                      ? "data is not present"
+                      : `error: ${x.error}`}
                   </td>
                 </tr>
               );

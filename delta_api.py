@@ -63,6 +63,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -246,7 +247,7 @@ def get_current_price(symbol: str) -> float:
 # --------------------------------------------------------------------------
 
 _RESOLUTION_SECONDS = {
-    "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+    "5s": 5, "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
     "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "1d": 86400, "1w": 604800,
 }
 
@@ -254,8 +255,9 @@ _RESOLUTION_SECONDS = {
 def get_candles(symbol: str, resolution: str = "1h", count: int = 200, end: int | None = None) -> list[dict]:
     """
     OHLC candles (GET /v2/history/candles), oldest first. resolution is one
-    of 1m,3m,5m,15m,30m,1h,2h,4h,6h,1d,1w (Delta Exchange's history/candles
-    endpoint does not support 5s). count is how many candles to ask for
+    of 5s,1m,3m,5m,15m,30m,1h,2h,4h,6h,1d,1w. Delta Exchange only supports
+    5s candles for BTCUSD/ETHUSD; other symbols 400 - see get_candles'
+    caller for how that surfaces. count is how many candles to ask for
     (best-effort - the exchange may return fewer near listing time).
     """
     seconds = _RESOLUTION_SECONDS.get(resolution)
@@ -528,11 +530,21 @@ def analyze_symbol(
     One-shot combined read for symbol: current price, max affordable
     contracts at the account's current leverage for this product (both
     timeframe-independent), plus per-timeframe ADX/trend-direction/RSI.
-    resolutions defaults to every supported timeframe (1m..1w) - pass a
+    resolutions defaults to every supported timeframe (5s..1w) - pass a
     shorter list, e.g. ['15m', '1h', '1d'], to skip the rest.
     """
     resolutions = resolutions or sorted(_RESOLUTION_SECONDS, key=_RESOLUTION_SECONDS.get)
-    ticker = get_ticker(symbol)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        ticker_f = pool.submit(get_ticker, symbol)
+        leverage_f = pool.submit(get_leverage, symbol)
+        product_f = pool.submit(get_product, symbol)
+        balance_f = pool.submit(get_available_balance, "USD")
+        ticker = ticker_f.result()
+        leverage = leverage_f.result()
+        product = product_f.result()
+        available_balance = balance_f.result()
+
     price = ticker.get("mark_price") or ticker.get("close") or ticker.get("spot_price")
     price = float(price) if price is not None else get_current_price(symbol)
     volume = ticker.get("volume")
@@ -540,15 +552,11 @@ def analyze_symbol(
     oi_value_usd = ticker.get("oi_value_usd")
     oi_change_usd_6h = ticker.get("oi_change_usd_6h")
 
-    leverage = get_leverage(symbol)
-    product = get_product(symbol)
     contract_value = float(product["contract_value"])
-    available_balance = get_available_balance("USD")
     margin_per_contract = (contract_value * price) / leverage if leverage else 0
     max_contracts = int(available_balance // margin_per_contract) if margin_per_contract else 0
 
-    timeframes = []
-    for resolution in resolutions:
+    def _fetch_timeframe(resolution: str) -> dict:
         try:
             candles = get_candles(symbol, resolution=resolution, count=period * 6)
             dmi = compute_dmi(candles, period=period)
@@ -563,26 +571,29 @@ def analyze_symbol(
             volume_avg = sum(baseline_volumes) / len(baseline_volumes) if baseline_volumes else None
             volume_ratio = (current_volume / volume_avg) if volume_avg else None
 
-            timeframes.append(
-                {
-                    "resolution": resolution,
-                    "adx": dmi["adx"],
-                    "plus_di": dmi["plus_di"],
-                    "minus_di": dmi["minus_di"],
-                    "direction": "up" if dmi["plus_di"] > dmi["minus_di"] else "down",
-                    "is_trending": dmi["adx"] >= adx_threshold,
-                    "rsi": rsi,
-                    "rsi_zone": rsi_zone,
-                    "atr": atr,
-                    "structure": structure,
-                    "volume": current_volume,
-                    "volume_avg": volume_avg,
-                    "volume_ratio": volume_ratio,
-                    "error": None,
-                }
-            )
+            return {
+                "resolution": resolution,
+                "adx": dmi["adx"],
+                "plus_di": dmi["plus_di"],
+                "minus_di": dmi["minus_di"],
+                "direction": "up" if dmi["plus_di"] > dmi["minus_di"] else "down",
+                "is_trending": dmi["adx"] >= adx_threshold,
+                "rsi": rsi,
+                "rsi_zone": rsi_zone,
+                "atr": atr,
+                "structure": structure,
+                "volume": current_volume,
+                "volume_avg": volume_avg,
+                "volume_ratio": volume_ratio,
+                "error": None,
+            }
         except (DeltaAPIError, ValueError) as exc:
-            timeframes.append({"resolution": resolution, "error": str(exc)})
+            return {"resolution": resolution, "error": str(exc)}
+
+    with ThreadPoolExecutor(max_workers=min(len(resolutions), 8) or 1) as pool:
+        results = list(pool.map(_fetch_timeframe, resolutions))
+    by_resolution = {r["resolution"]: r for r in results}
+    timeframes = [by_resolution[resolution] for resolution in resolutions]
 
     return {
         "symbol": symbol.upper(),

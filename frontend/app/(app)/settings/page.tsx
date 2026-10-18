@@ -22,7 +22,6 @@ export default function SettingsPage() {
 
 function SettingsContent() {
   const searchParams = useSearchParams();
-  const missing = searchParams.get("missing") === "1";
   const toast = useToast();
   const confirm = useConfirm();
   const qc = useQueryClient();
@@ -31,6 +30,11 @@ function SettingsContent() {
     queryKey: ["delta-settings"],
     queryFn: () => api<DeltaSettings>("GET", "/settings/delta"),
   });
+  // The redirect that sent us here (?missing=1) is a snapshot from the moment
+  // some other request got a 412 - it doesn't update itself, so once the keys
+  // are confirmed saved (data.is_set), stop showing it instead of leaving a
+  // stale "add your keys" banner on screen forever.
+  const missing = searchParams.get("missing") === "1" && !data?.is_set;
 
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");

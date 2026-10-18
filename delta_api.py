@@ -535,11 +535,20 @@ def analyze_symbol(
     """
     resolutions = resolutions or sorted(_RESOLUTION_SECONDS, key=_RESOLUTION_SECONDS.get)
 
+    def _submit(pool: ThreadPoolExecutor, fn, *args):
+        # ThreadPoolExecutor does NOT propagate contextvars into worker threads on
+        # its own, so without this, per-request credentials set via use_credentials()
+        # (a contextvar) silently disappear inside the pool and authenticated calls
+        # fail as if no API key were configured. Each task needs its OWN context
+        # copy - a single copy_context() can't be run() concurrently from multiple
+        # threads at once.
+        return pool.submit(contextvars.copy_context().run, fn, *args)
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        ticker_f = pool.submit(get_ticker, symbol)
-        leverage_f = pool.submit(get_leverage, symbol)
-        product_f = pool.submit(get_product, symbol)
-        balance_f = pool.submit(get_available_balance, "USD")
+        ticker_f = _submit(pool, get_ticker, symbol)
+        leverage_f = _submit(pool, get_leverage, symbol)
+        product_f = _submit(pool, get_product, symbol)
+        balance_f = _submit(pool, get_available_balance, "USD")
         ticker = ticker_f.result()
         leverage = leverage_f.result()
         product = product_f.result()
